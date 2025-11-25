@@ -29,6 +29,55 @@ public final class ProviderConfig {
         // Utility class - no instantiation
     }
 
+    // ==================== MODEL FAMILY ====================
+
+    /**
+     * Model families determine API format (request/response structure).
+     * This is independent of the provider - e.g., Azure can host both OpenAI and Anthropic models.
+     */
+    public enum ModelFamily {
+        OPENAI,     // gpt-*, text-embedding-*, dall-e-*, o1-*, etc.
+        ANTHROPIC   // claude-*
+    }
+
+    /**
+     * Known Anthropic model prefixes.
+     * Models starting with these prefixes use Anthropic API format.
+     */
+    private static final Set<String> ANTHROPIC_MODEL_PREFIXES = new HashSet<>(Arrays.asList(
+        "claude-"
+    ));
+
+    /**
+     * Determines the model family based on the model name.
+     * Used to select the correct API format (response_format vs output_format, etc.)
+     *
+     * @param model Model name (e.g., "gpt-4o", "claude-sonnet-4-5")
+     * @return ModelFamily for the model
+     */
+    public static ModelFamily getModelFamily(String model) {
+        if (model == null) {
+            return ModelFamily.OPENAI;
+        }
+        String lowerModel = model.toLowerCase();
+        for (String prefix : ANTHROPIC_MODEL_PREFIXES) {
+            if (lowerModel.startsWith(prefix)) {
+                return ModelFamily.ANTHROPIC;
+            }
+        }
+        return ModelFamily.OPENAI; // Default to OpenAI format
+    }
+
+    /**
+     * Checks if a model uses Anthropic API format.
+     *
+     * @param model Model name
+     * @return true if the model uses Anthropic format
+     */
+    public static boolean isAnthropicModel(String model) {
+        return getModelFamily(model) == ModelFamily.ANTHROPIC;
+    }
+
     // ==================== ENDPOINT ENUM ====================
 
     /**

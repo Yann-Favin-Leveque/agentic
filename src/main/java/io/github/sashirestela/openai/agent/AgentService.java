@@ -493,19 +493,6 @@ public class AgentService {
     }
 
     /**
-     * Checks if an instance is a Claude/Anthropic provider.
-     *
-     * @param instanceIndex Instance index
-     * @return true if Azure Anthropic
-     */
-    private boolean isClaudeInstance(int instanceIndex) {
-        if (instanceIndex < 0 || instanceIndex >= instances.size()) {
-            return false;
-        }
-        return instances.get(instanceIndex).getProvider() == Provider.AZURE_ANTHROPIC;
-    }
-
-    /**
      * Loads agent definitions from JSON files in the configured folder.
      */
     private void loadAgentDefinitions() throws IOException {
@@ -1139,8 +1126,8 @@ public class AgentService {
 
         Instance instance = instances.get(instanceIdx);
 
-        // Check if Claude/Anthropic instance - use direct API
-        if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+        // Check if Anthropic model - use Claude API format
+        if (ProviderConfig.isAnthropicModel(agent.getModel())) {
             logger.debug("Routing to Claude API for agent '{}' (model: {})", agent.getName(), agent.getModel());
             return executeClaudeRequest(agent, userMessage, instanceIdx);
         }
@@ -1587,8 +1574,8 @@ public class AgentService {
                 int instIndex = getNextInstanceForModel(model);
                 Instance instance = instances.get(instIndex);
 
-                // Check if this is a Claude/Anthropic instance
-                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                // Check if this is an Anthropic model - use virtual threads
+                if (ProviderConfig.isAnthropicModel(model)) {
                     // Create virtual thread (in-memory only)
                     String threadId = "claude_" + java.util.UUID.randomUUID().toString();
                     claudeThreads.put(threadId, new ArrayList<>());
@@ -1642,8 +1629,8 @@ public class AgentService {
                 String actualThreadId = extractThreadId(threadRef);
                 Instance instance = instances.get(instanceIndex);
 
-                // Check if this is a Claude/Anthropic virtual thread
-                if (actualThreadId.startsWith("claude_") || instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                // Check if this is a Claude/Anthropic virtual thread or Anthropic model
+                if (actualThreadId.startsWith("claude_") || ProviderConfig.isAnthropicModel(agent.getModel())) {
                     return sendMessageToClaudeThread(agent, actualThreadId, message, instanceIndex);
                 }
 
@@ -1886,8 +1873,8 @@ public class AgentService {
                 int instanceIdx = getNextInstanceForModel(model);
                 Instance instance = instances.get(instanceIdx);
 
-                // Check if Claude/Anthropic instance
-                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                // Check if Anthropic model - use Claude API format
+                if (ProviderConfig.isAnthropicModel(model)) {
                     return executeChatCompletionClaude(model, messages, temperature, instanceIdx);
                 }
 
@@ -2006,8 +1993,8 @@ public class AgentService {
 
                 String jsonResponse;
 
-                // Check if Claude/Anthropic instance
-                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                // Check if Anthropic model - use Claude API format
+                if (ProviderConfig.isAnthropicModel(model)) {
                     jsonResponse = executeChatCompletionClaudeStructured(model, messages, temperature, instanceIdx, resultClass);
                 } else {
                     // OpenAI path
