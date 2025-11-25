@@ -8,117 +8,54 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for {@link AgentServiceConfig} configuration builder.
- * These tests verify the configuration validation and factory methods.
+ * These tests verify the JSON-based configuration parsing and validation.
  */
 class AgentServiceConfigTest {
 
+    private static final String VALID_INSTANCES_JSON =
+            "[{\"id\":\"openai-main\",\"url\":\"https://api.openai.com\",\"key\":\"sk-xxx\",\"models\":\"gpt-4o,gpt-4o-mini\",\"provider\":\"openai\",\"enabled\":true}," +
+            "{\"id\":\"azure-1\",\"url\":\"https://test.openai.azure.com\",\"key\":\"azure-key\",\"models\":\"gpt-4o\",\"provider\":\"azure\",\"apiVersion\":\"2024-08-01-preview\",\"enabled\":true}]";
+
+    private static final String SINGLE_INSTANCE_JSON =
+            "[{\"id\":\"openai-main\",\"url\":\"https://api.openai.com\",\"key\":\"sk-xxx\",\"models\":\"gpt-4o\",\"provider\":\"openai\",\"enabled\":true}]";
+
     @Test
-    void testOpenAIFactoryMethod() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key")
+    void testFromJsonFactoryMethod() {
+        var config = AgentServiceConfig.fromJson(VALID_INSTANCES_JSON)
                 .agentResultClassPackage("com.example")
                 .build();
 
-        assertFalse(config.isUseAzure());
-        assertEquals(List.of("sk-test-key"), config.getOpenAiApiKeys());
-        assertEquals(List.of("https://api.openai.com/v1"), config.getOpenAiBaseUrls());
+        assertTrue(config.isUsingJsonConfig());
         assertEquals("com.example", config.getAgentResultClassPackage());
         assertDoesNotThrow(config::validate);
     }
 
     @Test
-    void testAzureSingleInstanceFactoryMethod() {
-        var config = AgentServiceConfig.forAzure(
-                "azure-key",
-                "https://test.openai.azure.com/",
-                "2024-08-01-preview"
-        ).build();
+    void testParseInstances() {
+        var config = AgentServiceConfig.fromJson(VALID_INSTANCES_JSON).build();
 
-        assertTrue(config.isUseAzure());
-        assertEquals(List.of("azure-key"), config.getAzureApiKeys());
-        assertEquals(List.of("https://test.openai.azure.com/"), config.getAzureBaseUrls());
-        assertEquals("2024-08-01-preview", config.getAzureApiVersion());
-        assertDoesNotThrow(config::validate);
+        List<InstanceConfig> instances = config.parseInstances();
+
+        assertEquals(2, instances.size());
+        assertEquals("openai-main", instances.get(0).getId());
+        assertEquals("azure-1", instances.get(1).getId());
+        assertEquals("openai", instances.get(0).getProvider());
+        assertEquals("azure", instances.get(1).getProvider());
     }
 
     @Test
-    void testAzureMultiInstanceFactoryMethod() {
-        var apiKeys = List.of("key1", "key2", "key3");
-        var baseUrls = List.of("url1", "url2", "url3");
-
-        var config = AgentServiceConfig.forAzureMultiInstance(
-                apiKeys,
-                baseUrls,
-                "2024-08-01-preview"
-        ).build();
-
-        assertTrue(config.isUseAzure());
-        assertEquals(3, config.getAzureApiKeys().size());
-        assertEquals(apiKeys, config.getAzureApiKeys());
-        assertEquals(baseUrls, config.getAzureBaseUrls());
-        assertDoesNotThrow(config::validate);
-    }
-
-    @Test
-    void testAzureMultiInstanceFactoryMethodMismatchThrows() {
-        var exception = assertThrows(IllegalArgumentException.class, () -> {
-            AgentServiceConfig.forAzureMultiInstance(
-                    List.of("key1", "key2"),
-                    List.of("url1"),  // Mismatched size!
-                    "2024-08-01-preview"
-            );
-        });
-        assertTrue(exception.getMessage().contains("same size"));
-    }
-
-    @Test
-    void testValidationFailsWhenNoProviderConfigured() {
+    void testValidationFailsWhenInstancesJsonMissing() {
         var config = AgentServiceConfig.builder()
-                // Missing both OpenAI and Azure config!
+                // Missing instancesJson!
                 .build();
 
         var exception = assertThrows(IllegalArgumentException.class, config::validate);
-        assertTrue(exception.getMessage().contains("At least one provider must be configured"));
-    }
-
-    @Test
-    void testValidationFailsWhenAzureUrlsMissing() {
-        var config = AgentServiceConfig.builder()
-                .azureApiKeys(List.of("key1", "key2"))
-                .azureApiVersion("2024-08-01-preview")
-                // Missing azureBaseUrls!
-                .build();
-
-        var exception = assertThrows(IllegalArgumentException.class, config::validate);
-        assertTrue(exception.getMessage().contains("Azure base URLs are required"));
-    }
-
-    @Test
-    void testValidationFailsWhenAzureSizeMismatch() {
-        var config = AgentServiceConfig.builder()
-                .azureApiKeys(List.of("key1", "key2", "key3"))  // 3 keys
-                .azureBaseUrls(List.of("url1", "url2"))  // Only 2 URLs - mismatch!
-                .azureApiVersion("2024-08-01-preview")
-                .build();
-
-        var exception = assertThrows(IllegalArgumentException.class, config::validate);
-        assertTrue(exception.getMessage().contains("must have the same size"));
-    }
-
-    @Test
-    void testValidationFailsWhenAzureApiVersionMissing() {
-        var config = AgentServiceConfig.builder()
-                .azureApiKeys(List.of("key1"))
-                .azureBaseUrls(List.of("url1"))
-                // Missing azureApiVersion!
-                .build();
-
-        var exception = assertThrows(IllegalArgumentException.class, config::validate);
-        assertTrue(exception.getMessage().contains("Azure API version is required"));
+        assertTrue(exception.getMessage().contains("instancesJson is required"));
     }
 
     @Test
     void testValidationFailsWhenRequestsPerSecondNegative() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key")
+        var config = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON)
                 .requestsPerSecond(-1)
                 .build();
 
@@ -128,7 +65,7 @@ class AgentServiceConfigTest {
 
     @Test
     void testValidationFailsWhenMaxRetriesNegative() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key")
+        var config = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON)
                 .maxRetries(-1)
                 .build();
 
@@ -138,7 +75,7 @@ class AgentServiceConfigTest {
 
     @Test
     void testValidationFailsWhenTimeoutNegative() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key")
+        var config = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON)
                 .defaultResponseTimeout(-1000L)
                 .build();
 
@@ -148,7 +85,7 @@ class AgentServiceConfigTest {
 
     @Test
     void testDefaultValues() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key").build();
+        var config = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON).build();
 
         assertEquals(5, config.getRequestsPerSecond());
         assertEquals(3, config.getMaxRetries());
@@ -156,12 +93,11 @@ class AgentServiceConfigTest {
         assertEquals(10000L, config.getRetryBaseDelayMs());
         assertEquals(60000L, config.getRateLimitDelayMs());
         assertEquals(300000L, config.getError502DelayMs());
-        assertEquals("2024-02-01", config.getAzureDalleApiVersion());
     }
 
     @Test
     void testCustomValues() {
-        var config = AgentServiceConfig.forOpenAI("sk-test-key")
+        var config = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON)
                 .requestsPerSecond(10)
                 .maxRetries(5)
                 .defaultResponseTimeout(60000L)
@@ -184,28 +120,50 @@ class AgentServiceConfigTest {
     }
 
     @Test
-    void testAzureDalleConfiguration() {
-        var config = AgentServiceConfig.forAzure(
-                "azure-key",
-                "https://test.openai.azure.com/",
-                "2024-08-01-preview"
-        )
-                .azureDalleApiKeys(List.of("dalle-key1", "dalle-key2"))
-                .azureDalleBaseUrls(List.of("dalle-url1", "dalle-url2"))
-                .azureDalleApiVersion("2024-03-01")
-                .build();
+    void testIsUsingJsonConfig() {
+        var configWithJson = AgentServiceConfig.fromJson(SINGLE_INSTANCE_JSON).build();
+        var configWithoutJson = AgentServiceConfig.builder().build();
 
-        assertEquals(List.of("dalle-key1", "dalle-key2"), config.getAzureDalleApiKeys());
-        assertEquals(List.of("dalle-url1", "dalle-url2"), config.getAzureDalleBaseUrls());
-        assertEquals("2024-03-01", config.getAzureDalleApiVersion());
-        assertDoesNotThrow(config::validate);
+        assertTrue(configWithJson.isUsingJsonConfig());
+        assertFalse(configWithoutJson.isUsingJsonConfig());
+    }
+
+    @Test
+    void testParseInstancesReturnsEmptyListWhenNull() {
+        var config = AgentServiceConfig.builder().build();
+
+        List<InstanceConfig> instances = config.parseInstances();
+
+        assertTrue(instances.isEmpty());
+    }
+
+    @Test
+    void testParseInstancesThrowsOnInvalidJson() {
+        var config = AgentServiceConfig.fromJson("invalid json").build();
+
+        assertThrows(IllegalArgumentException.class, config::parseInstances);
+    }
+
+    @Test
+    void testMultiProviderConfiguration() {
+        String multiProviderJson =
+            "[{\"id\":\"openai\",\"url\":\"https://api.openai.com\",\"key\":\"sk-xxx\",\"models\":\"gpt-4o\",\"provider\":\"openai\",\"enabled\":true}," +
+            "{\"id\":\"azure\",\"url\":\"https://test.openai.azure.com\",\"key\":\"key\",\"models\":\"gpt-4o\",\"provider\":\"azure\",\"apiVersion\":\"2024-08-01-preview\",\"enabled\":true}," +
+            "{\"id\":\"anthropic\",\"url\":\"https://test.services.ai.azure.com\",\"key\":\"key\",\"models\":\"claude-sonnet-4-5\",\"provider\":\"azure-anthropic\",\"apiVersion\":\"2023-06-01\",\"enabled\":true}]";
+
+        var config = AgentServiceConfig.fromJson(multiProviderJson).build();
+        List<InstanceConfig> instances = config.parseInstances();
+
+        assertEquals(3, instances.size());
+        assertEquals("openai", instances.get(0).getProvider());
+        assertEquals("azure", instances.get(1).getProvider());
+        assertEquals("azure-anthropic", instances.get(2).getProvider());
     }
 
     @Test
     void testBuilderPattern() {
-        // Test that we can chain builder methods
         var config = AgentServiceConfig.builder()
-                .openAiApiKeys(List.of("sk-test-key"))
+                .instancesJson(SINGLE_INSTANCE_JSON)
                 .requestsPerSecond(10)
                 .maxRetries(5)
                 .defaultResponseTimeout(60000L)
@@ -213,8 +171,7 @@ class AgentServiceConfigTest {
                 .build();
 
         assertNotNull(config);
-        assertEquals(List.of("sk-test-key"), config.getOpenAiApiKeys());
-        assertFalse(config.isUseAzure());
+        assertTrue(config.isUsingJsonConfig());
         assertEquals(10, config.getRequestsPerSecond());
         assertEquals("com.example", config.getAgentResultClassPackage());
     }

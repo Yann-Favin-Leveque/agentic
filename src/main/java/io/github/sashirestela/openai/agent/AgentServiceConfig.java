@@ -5,23 +5,31 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Builder;
 import lombok.Getter;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
  * Configuration for {@link AgentService} with builder pattern.
- * Provides flexible configuration for OpenAI and Azure OpenAI deployments.
+ * Uses JSON-based instance configuration for flexible multi-provider setups.
  *
  * <p>Example usage:</p>
  * <pre>{@code
  * AgentServiceConfig config = AgentServiceConfig.builder()
- *     .provider(Provider.OPENAI)
- *     .openAiApiKey(System.getenv("OPENAI_API_KEY"))
+ *     .instancesJson(System.getenv("OPENAI_INSTANCES"))
  *     .agentResultClassPackage("com.example.results")
+ *     .agentJsonFolderPath("/config/agents")
  *     .requestsPerSecond(5)
  *     .maxRetries(3)
  *     .build();
+ * }</pre>
+ *
+ * <p>Environment variable OPENAI_INSTANCES format:</p>
+ * <pre>{@code
+ * [
+ *   {"id":"openai-main","url":"https://api.openai.com","key":"sk-xxx","models":"gpt-4o,gpt-4o-mini","provider":"openai","enabled":true},
+ *   {"id":"azure-1","url":"https://my-resource.openai.azure.com","key":"xxx","models":"gpt-4o","provider":"azure","apiVersion":"2024-08-01-preview","enabled":true},
+ *   {"id":"azure-anthropic","url":"https://my-resource.services.ai.azure.com","key":"xxx","models":"claude-sonnet-4-5","provider":"azure-anthropic","apiVersion":"2023-06-01","enabled":true}
+ * ]
  * }</pre>
  *
  * @see AgentService
@@ -30,113 +38,23 @@ import java.util.concurrent.Executor;
 @Builder
 public class AgentServiceConfig {
 
-    // === NEW: JSON-based Instance Configuration ===
+    // === Instance Configuration ===
 
     /**
      * JSON string containing instance configurations.
-     * This is the new recommended way to configure AgentService.
      *
-     * <p>Example:</p>
-     * <pre>{@code
-     * [
-     *   {
-     *     "id": "openai-main",
-     *     "url": "https://api.openai.com/v1",
-     *     "key": "sk-xxx",
-     *     "models": "gpt-4o,text-embedding-3-small",
-     *     "provider": "openai",
-     *     "apiVersion": null
-     *   },
-     *   {
-     *     "id": "azure-eastus",
-     *     "url": "https://my-resource.cognitiveservices.azure.com",
-     *     "key": "azure-key",
-     *     "models": "gpt-4o,dall-e-3",
-     *     "provider": "azure",
-     *     "apiVersion": "2024-08-01-preview"
-     *   }
-     * ]
-     * }</pre>
-     *
-     * If this field is provided, it takes precedence over legacy configuration fields
-     * (openAiApiKeys, azureApiKeys, etc.).
+     * <p>Each instance object should have:</p>
+     * <ul>
+     *   <li>id: Unique identifier for the instance</li>
+     *   <li>url: Base URL (e.g., "https://api.openai.com")</li>
+     *   <li>key: API key</li>
+     *   <li>models: Comma-separated list of deployed models</li>
+     *   <li>provider: "openai", "azure", or "azure-anthropic"</li>
+     *   <li>apiVersion: Required for Azure providers</li>
+     *   <li>enabled: true/false to enable/disable the instance</li>
+     * </ul>
      */
     private final String instancesJson;
-
-    // === LEGACY: OpenAI Configuration (deprecated in favor of instancesJson) ===
-
-    /**
-     * OpenAI API keys (one per instance).
-     * Supports multiple keys for load balancing or different OpenAI-compatible endpoints.
-     * The number of instances is automatically determined from the size of this list.
-     */
-    private final List<String> openAiApiKeys;
-
-    /**
-     * Base URLs for OpenAI API (one per instance).
-     * Default: "https://api.openai.com/v1" for all instances if not specified.
-     * Can be different for OpenAI-compatible endpoints (local LLMs, proxies, etc.)
-     */
-    private final List<String> openAiBaseUrls;
-
-    /**
-     * Models deployed on OpenAI instances (comma-separated).
-     * Default: "gpt-4o,gpt-4o-mini,gpt-3.5-turbo,dall-e-3"
-     * Example: "gpt-4o,dall-e-3"
-     */
-    private final String openAiModels;
-
-    // === Azure Configuration ===
-
-    /**
-     * Azure OpenAI API keys (one per instance).
-     * The number of instances is automatically determined from the size of this list.
-     */
-    private final List<String> azureApiKeys;
-
-    /**
-     * Azure OpenAI base URLs (one per instance).
-     * Format: https://{resource-name}.openai.azure.com/
-     */
-    private final List<String> azureBaseUrls;
-
-    /**
-     * Azure OpenAI API version.
-     * Example: "2024-08-01-preview"
-     */
-    private final String azureApiVersion;
-
-    /**
-     * Models deployed on Azure chat instances (comma-separated).
-     * Default: "gpt-4o"
-     * Example: "gpt-4o,gpt-4o-mini"
-     */
-    private final String azureModels;
-
-    // === DALL-E Configuration (Azure only) ===
-
-    /**
-     * Azure OpenAI API keys for DALL-E (optional, separate deployment).
-     */
-    private final List<String> azureDalleApiKeys;
-
-    /**
-     * Azure OpenAI base URLs for DALL-E (optional, separate deployment).
-     */
-    private final List<String> azureDalleBaseUrls;
-
-    /**
-     * Azure API version for DALL-E.
-     * Default: "2024-02-01"
-     */
-    @Builder.Default
-    private final String azureDalleApiVersion = "2024-02-01";
-
-    /**
-     * Models deployed on Azure DALL-E instances (comma-separated).
-     * Default: "dall-e-3"
-     */
-    private final String azureDalleModels;
 
     // === Agent Configuration ===
 
@@ -163,7 +81,7 @@ public class AgentServiceConfig {
     // === Rate Limiting ===
 
     /**
-     * Maximum requests per second to OpenAI API.
+     * Maximum requests per second to API.
      * Uses token bucket algorithm (Bucket4j).
      * Default: 5 requests/second
      */
@@ -198,7 +116,6 @@ public class AgentServiceConfig {
     @Builder.Default
     private final long error502DelayMs = 300000L;
 
-
     // === Executor Configuration ===
 
     /**
@@ -207,48 +124,17 @@ public class AgentServiceConfig {
      */
     private final Executor customExecutor;
 
+    // ==================== VALIDATION ====================
+
     /**
      * Validate configuration consistency.
      *
      * @throws IllegalArgumentException if configuration is invalid
      */
     public void validate() {
-        // Validate OpenAI configuration if provided
-        if (openAiApiKeys != null && !openAiApiKeys.isEmpty()) {
-            // Base URLs are optional (defaults to https://api.openai.com/v1)
-            // But if provided, must match key count
-            if (openAiBaseUrls != null && !openAiBaseUrls.isEmpty()) {
-                if (openAiApiKeys.size() != openAiBaseUrls.size()) {
-                    throw new IllegalArgumentException(
-                        String.format("OpenAI API keys (%d) and base URLs (%d) must have the same size",
-                            openAiApiKeys.size(), openAiBaseUrls.size()));
-                }
-            }
+        if (instancesJson == null || instancesJson.trim().isEmpty()) {
+            throw new IllegalArgumentException("instancesJson is required");
         }
-
-        // Validate Azure configuration if provided
-        if (azureApiKeys != null && !azureApiKeys.isEmpty()) {
-            if (azureBaseUrls == null || azureBaseUrls.isEmpty()) {
-                throw new IllegalArgumentException("Azure base URLs are required when Azure API keys are provided");
-            }
-            if (azureApiKeys.size() != azureBaseUrls.size()) {
-                throw new IllegalArgumentException(
-                    String.format("Azure API keys (%d) and base URLs (%d) must have the same size",
-                        azureApiKeys.size(), azureBaseUrls.size()));
-            }
-            if (azureApiVersion == null || azureApiVersion.isEmpty()) {
-                throw new IllegalArgumentException("Azure API version is required when Azure is configured");
-            }
-        }
-
-        // Validate that at least one provider is configured
-        boolean hasOpenAI = openAiApiKeys != null && !openAiApiKeys.isEmpty();
-        boolean hasAzure = azureApiKeys != null && !azureApiKeys.isEmpty();
-
-        if (!hasOpenAI && !hasAzure) {
-            throw new IllegalArgumentException("At least one provider must be configured (OpenAI or Azure)");
-        }
-
         if (requestsPerSecond <= 0) {
             throw new IllegalArgumentException("requestsPerSecond must be positive");
         }
@@ -258,104 +144,6 @@ public class AgentServiceConfig {
         if (defaultResponseTimeout <= 0) {
             throw new IllegalArgumentException("defaultResponseTimeout must be positive");
         }
-    }
-
-    // ==================== HELPER METHODS ====================
-
-    /**
-     * Check if Azure is configured.
-     * @return true if Azure API keys are provided
-     */
-    public boolean isUseAzure() {
-        return azureApiKeys != null && !azureApiKeys.isEmpty();
-    }
-
-    // ==================== FACTORY METHODS FOR CLEANER API ====================
-
-    /**
-     * Creates a configuration for standard OpenAI API with a single instance.
-     *
-     * @param apiKey OpenAI API key
-     * @return Builder pre-configured for OpenAI
-     */
-    public static AgentServiceConfigBuilder forOpenAI(String apiKey) {
-        return AgentServiceConfig.builder()
-                .openAiApiKeys(List.of(apiKey))
-                .openAiBaseUrls(List.of("https://api.openai.com/v1"));
-    }
-
-    /**
-     * Creates a configuration for OpenAI with multiple instances (load balancing).
-     *
-     * @param apiKeys List of OpenAI API keys (one per instance)
-     * @return Builder pre-configured for multi-instance OpenAI
-     */
-    public static AgentServiceConfigBuilder forOpenAIMultiInstance(List<String> apiKeys) {
-        if (apiKeys == null || apiKeys.isEmpty()) {
-            throw new IllegalArgumentException("API keys list cannot be null or empty");
-        }
-        // Default all instances to standard OpenAI URL
-        List<String> urls = new ArrayList<>();
-        for (int i = 0; i < apiKeys.size(); i++) {
-            urls.add("https://api.openai.com/v1");
-        }
-        return AgentServiceConfig.builder()
-                .openAiApiKeys(apiKeys)
-                .openAiBaseUrls(urls);
-    }
-
-    /**
-     * Creates a configuration for OpenAI-compatible endpoints with custom URLs.
-     *
-     * @param apiKeys List of API keys
-     * @param baseUrls List of base URLs (for local LLMs, proxies, etc.)
-     * @return Builder pre-configured for custom OpenAI-compatible endpoints
-     */
-    public static AgentServiceConfigBuilder forOpenAICompatible(
-            List<String> apiKeys,
-            List<String> baseUrls) {
-        if (apiKeys == null || baseUrls == null || apiKeys.size() != baseUrls.size()) {
-            throw new IllegalArgumentException("API keys and base URLs must have the same size");
-        }
-        return AgentServiceConfig.builder()
-                .openAiApiKeys(apiKeys)
-                .openAiBaseUrls(baseUrls);
-    }
-
-    /**
-     * Creates a configuration for Azure OpenAI with a single instance.
-     *
-     * @param apiKey Azure OpenAI API key
-     * @param baseUrl Azure OpenAI base URL (e.g., "https://my-resource.openai.azure.com/")
-     * @param apiVersion Azure API version (e.g., "2024-08-01-preview")
-     * @return Builder pre-configured for single Azure instance
-     */
-    public static AgentServiceConfigBuilder forAzure(String apiKey, String baseUrl, String apiVersion) {
-        return AgentServiceConfig.builder()
-                .azureApiKeys(List.of(apiKey))
-                .azureBaseUrls(List.of(baseUrl))
-                .azureApiVersion(apiVersion);
-    }
-
-    /**
-     * Creates a configuration for Azure OpenAI with multiple instances (load balancing).
-     *
-     * @param apiKeys List of Azure OpenAI API keys (one per instance)
-     * @param baseUrls List of Azure OpenAI base URLs (one per instance)
-     * @param apiVersion Azure API version (e.g., "2024-08-01-preview")
-     * @return Builder pre-configured for multi-instance Azure
-     */
-    public static AgentServiceConfigBuilder forAzureMultiInstance(
-            List<String> apiKeys,
-            List<String> baseUrls,
-            String apiVersion) {
-        if (apiKeys == null || baseUrls == null || apiKeys.size() != baseUrls.size()) {
-            throw new IllegalArgumentException("API keys and base URLs must have the same size");
-        }
-        return AgentServiceConfig.builder()
-                .azureApiKeys(apiKeys)
-                .azureBaseUrls(baseUrls)
-                .azureApiVersion(apiVersion);
     }
 
     // ==================== JSON PARSING ====================
@@ -400,7 +188,6 @@ public class AgentServiceConfig {
 
     /**
      * Factory method to create configuration from JSON string.
-     * This is a convenience method for direct JSON configuration.
      *
      * @param instancesJson JSON string with instance configurations
      * @return Builder pre-configured with JSON
