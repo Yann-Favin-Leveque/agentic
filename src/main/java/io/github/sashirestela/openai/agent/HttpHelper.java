@@ -296,11 +296,16 @@ public class HttpHelper {
      */
     private boolean isAssistantsEndpoint(ProviderConfig.Endpoint endpoint) {
         return endpoint == ProviderConfig.Endpoint.ASSISTANTS ||
+               endpoint == ProviderConfig.Endpoint.ASSISTANT ||
                endpoint == ProviderConfig.Endpoint.THREADS ||
+               endpoint == ProviderConfig.Endpoint.THREAD ||
                endpoint == ProviderConfig.Endpoint.THREAD_MESSAGES ||
+               endpoint == ProviderConfig.Endpoint.THREAD_MESSAGE ||
                endpoint == ProviderConfig.Endpoint.THREAD_RUNS ||
+               endpoint == ProviderConfig.Endpoint.THREAD_RUN ||
                endpoint == ProviderConfig.Endpoint.THREAD_RUN_STEPS ||
                endpoint == ProviderConfig.Endpoint.VECTOR_STORES ||
+               endpoint == ProviderConfig.Endpoint.VECTOR_STORE ||
                endpoint == ProviderConfig.Endpoint.VECTOR_STORE_FILES;
     }
 

@@ -149,15 +149,17 @@ public class AgentService {
         }
 
         if (this.instances.isEmpty()) {
-            throw new IllegalStateException("No instances configured. Set OPENAI_INSTANCES environment variable.");
+            logger.warn("⚠️ No instances configured. AgentService starting in degraded mode.");
+            logger.warn("   Set OPENAI_INSTANCES environment variable to enable AI features.");
+            logger.warn("   API calls will fail with 'No instance available' errors.");
+        } else {
+            logger.info("Total instances: {} | Models available: {}",
+                    this.instances.size(),
+                    this.instances.stream()
+                            .flatMap(i -> i.getDeployedModels().stream())
+                            .distinct()
+                            .collect(java.util.stream.Collectors.toList()));
         }
-
-        logger.info("Total instances: {} | Models available: {}",
-                this.instances.size(),
-                this.instances.stream()
-                        .flatMap(i -> i.getDeployedModels().stream())
-                        .distinct()
-                        .collect(java.util.stream.Collectors.toList()));
 
         // Initialize rate limiter
         this.rateLimiter = new RateLimiter(config.getRequestsPerSecond());
@@ -292,6 +294,12 @@ public class AgentService {
      * @throws IllegalArgumentException if no instance has the model
      */
     private int getNextInstanceForModel(String model) {
+        // Check if we're in degraded mode (no instances configured)
+        if (instances.isEmpty()) {
+            throw new IllegalStateException(
+                    "No AI instances configured. Set OPENAI_INSTANCES environment variable to enable AI features.");
+        }
+
         // Get or create atomic counter for this specific model
         AtomicInteger modelIndex = modelIndexes.computeIfAbsent(model, k -> new AtomicInteger(0));
 
@@ -322,6 +330,39 @@ public class AgentService {
                                 .distinct()
                                 .collect(java.util.stream.Collectors.toList()))
         );
+    }
+
+    /**
+     * Gets the next instance index for model-agnostic operations (file uploads, vector stores, etc.).
+     * Uses global round-robin across all instances.
+     *
+     * @return INDEX of the next instance
+     * @throws IllegalStateException if no instances are configured (degraded mode)
+     */
+    private int getNextGlobalInstance() {
+        if (instances.isEmpty()) {
+            throw new IllegalStateException(
+                    "No AI instances configured. Set OPENAI_INSTANCES environment variable to enable AI features.");
+        }
+        return globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
+    }
+
+    /**
+     * Checks if the service is running in degraded mode (no instances configured).
+     *
+     * @return true if no instances are available
+     */
+    public boolean isDegradedMode() {
+        return instances.isEmpty();
+    }
+
+    /**
+     * Gets the number of configured instances.
+     *
+     * @return number of instances (0 if degraded mode)
+     */
+    public int getInstanceCount() {
+        return instances.size();
     }
 
     /**
@@ -536,6 +577,55 @@ public class AgentService {
         Object items = schema.get("items");
         if (items instanceof Map) {
             fixSchemaForClaude((Map<String, Object>) items);
+        }
+    }
+
+    /**
+     * Fixes Map fields in Claude response that were returned as JSON strings.
+     * Since we tell Claude to return Maps as strings (due to schema limitations),
+     * we need to parse those strings back into proper JSON objects before deserializing.
+     *
+     * @param jsonResponse The JSON response from Claude
+     * @param resultClass The target class to check for Map fields
+     * @return Fixed JSON with Map fields as objects instead of strings
+     */
+    @SuppressWarnings("unchecked")
+    private <T> String fixMapFieldsFromClaudeResponse(String jsonResponse, Class<T> resultClass) {
+        try {
+            // Parse response as a tree
+            Map<String, Object> responseMap = objectMapper.readValue(jsonResponse,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+
+            // Find Map fields in the result class and fix them
+            boolean modified = false;
+            for (java.lang.reflect.Field field : resultClass.getDeclaredFields()) {
+                if (java.util.Map.class.isAssignableFrom(field.getType())) {
+                    String fieldName = field.getName();
+                    Object value = responseMap.get(fieldName);
+
+                    // If the value is a String, try to parse it as JSON
+                    if (value instanceof String) {
+                        try {
+                            Map<String, Object> parsedMap = objectMapper.readValue((String) value,
+                                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                            responseMap.put(fieldName, parsedMap);
+                            modified = true;
+                            logger.debug("Converted Map field '{}' from JSON string to object", fieldName);
+                        } catch (Exception e) {
+                            logger.warn("Failed to parse Map field '{}' as JSON: {}", fieldName, e.getMessage());
+                        }
+                    }
+                }
+            }
+
+            if (modified) {
+                return objectMapper.writeValueAsString(responseMap);
+            }
+            return jsonResponse;
+
+        } catch (Exception e) {
+            logger.warn("Failed to fix Map fields in Claude response: {}", e.getMessage());
+            return jsonResponse;
         }
     }
 
@@ -1372,7 +1462,7 @@ public class AgentService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // Use global round-robin for file uploads
-                int instanceIdx = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
+                int instanceIdx = getNextGlobalInstance();
                 Instance instance = instances.get(instanceIdx);
 
                 logger.debug("Uploading file {} to instance {} with purpose: {}",
@@ -1478,7 +1568,7 @@ public class AgentService {
                             .collect(java.util.stream.Collectors.toList());
                 } else {
                     // No files - use round-robin
-                    instIndex = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
+                    instIndex = getNextGlobalInstance();
                     actualFileIds = fileIds;
                 }
 
@@ -2075,6 +2165,11 @@ public class AgentService {
                 // If no result class or DefaultResult, return DefaultResult with raw response
                 if (resultClass == null || resultClass == DefaultResult.class) {
                     return (T) new DefaultResult(jsonResponse);
+                }
+
+                // For Claude responses, fix Map fields that were returned as JSON strings
+                if (ProviderConfig.isAnthropicModel(model)) {
+                    jsonResponse = fixMapFieldsFromClaudeResponse(jsonResponse, resultClass);
                 }
 
                 // Deserialize to typed result
