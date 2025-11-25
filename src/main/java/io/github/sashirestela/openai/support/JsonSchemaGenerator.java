@@ -6,12 +6,15 @@ import io.github.sashirestela.openai.common.ResponseFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -221,6 +224,55 @@ public class JsonSchemaGenerator {
             return clazz.getDeclaredFields().length > 0;
         } catch (ClassNotFoundException e) {
             return false;
+        }
+    }
+
+    /**
+     * Fixes Map fields in Claude responses that were returned as JSON strings instead of objects.
+     * Claude sometimes returns Map fields as escaped JSON strings, this method parses them back to objects.
+     *
+     * @param jsonResponse The JSON response from Claude
+     * @param resultClass The target class to check for Map fields
+     * @param <T> The result type
+     * @return Fixed JSON with Map fields as objects instead of strings
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> String fixMapFieldsFromResponse(String jsonResponse, Class<T> resultClass) {
+        try {
+            // Parse response as a tree
+            Map<String, Object> responseMap = mapper.readValue(jsonResponse,
+                    new TypeReference<Map<String, Object>>() {});
+
+            // Find Map fields in the result class and fix them
+            boolean modified = false;
+            for (Field field : resultClass.getDeclaredFields()) {
+                if (Map.class.isAssignableFrom(field.getType())) {
+                    String fieldName = field.getName();
+                    Object value = responseMap.get(fieldName);
+
+                    // If the value is a String, try to parse it as JSON
+                    if (value instanceof String) {
+                        try {
+                            Map<String, Object> parsedMap = mapper.readValue((String) value,
+                                    new TypeReference<Map<String, Object>>() {});
+                            responseMap.put(fieldName, parsedMap);
+                            modified = true;
+                            logger.debug("Converted Map field '{}' from JSON string to object", fieldName);
+                        } catch (Exception e) {
+                            logger.warn("Failed to parse Map field '{}' as JSON: {}", fieldName, e.getMessage());
+                        }
+                    }
+                }
+            }
+
+            if (modified) {
+                return mapper.writeValueAsString(responseMap);
+            }
+            return jsonResponse;
+
+        } catch (Exception e) {
+            logger.warn("Failed to fix Map fields in response: {}", e.getMessage());
+            return jsonResponse;
         }
     }
 

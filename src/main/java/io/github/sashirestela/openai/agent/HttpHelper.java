@@ -88,6 +88,31 @@ public class HttpHelper {
             Class<T> responseType,
             Map<String, String> pathParams) {
 
+        return post(instance, endpoint, model, requestBody, responseType, pathParams, null);
+    }
+
+    /**
+     * Makes a POST request to an API endpoint with path parameters and extra headers.
+     *
+     * @param instance The instance to call
+     * @param endpoint The endpoint type
+     * @param model Model name (for endpoints that need it in path, can be null)
+     * @param requestBody Request body object (will be serialized to JSON)
+     * @param responseType Response class type
+     * @param pathParams Path parameters to replace (e.g., threadId, runId)
+     * @param extraHeaders Additional headers to add (can be null)
+     * @param <T> Response type
+     * @return CompletableFuture with parsed response
+     */
+    public <T> CompletableFuture<T> post(
+            Instance instance,
+            ProviderConfig.Endpoint endpoint,
+            String model,
+            Object requestBody,
+            Class<T> responseType,
+            Map<String, String> pathParams,
+            Map<String, String> extraHeaders) {
+
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // Build URL
@@ -111,6 +136,13 @@ public class HttpHelper {
                 // Add beta header for assistants API
                 if (isAssistantsEndpoint(endpoint)) {
                     requestBuilder.header("OpenAI-Beta", "assistants=v2");
+                }
+
+                // Add extra headers if provided
+                if (extraHeaders != null) {
+                    for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
+                        requestBuilder.header(header.getKey(), header.getValue());
+                    }
                 }
 
                 HttpRequest request = requestBuilder.build();

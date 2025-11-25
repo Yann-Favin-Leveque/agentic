@@ -24,7 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * </ul>
  * </p>
  *
- * @see AgentService#requestAgent(String, Agent)
+ * @see AgentService # requestAgent(String, Agent)
  */
 public interface AgentResult {
 

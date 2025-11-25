@@ -31,14 +31,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -74,9 +69,6 @@ public class AgentService {
 
     // HTTP helper for ALL API calls (replaces SimpleOpenAI/CleverClient)
     private final HttpHelper httpHelper;
-
-    // Legacy HTTP client (kept for backward compatibility, will be removed)
-    private final HttpClient httpClient;
 
     /**
      * Constructs AgentService with the provided configuration.
@@ -167,9 +159,6 @@ public class AgentService {
 
         // Initialize Claude virtual threads storage
         this.claudeThreads = new ConcurrentHashMap<>();
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
-                .build();
         logger.info("Initialized Claude virtual thread storage");
 
         // Load agent definitions if folder path is provided
@@ -375,7 +364,7 @@ public class AgentService {
     // ==================== CLAUDE/ANTHROPIC API METHODS ====================
 
     /**
-     * Calls Claude/Anthropic API directly via HTTP.
+     * Calls Claude/Anthropic API via HttpHelper.
      * Used for Azure Anthropic instances that don't use the OpenAI API format.
      *
      * @param instanceIndex Instance index for Azure Anthropic
@@ -387,59 +376,24 @@ public class AgentService {
         try {
             Instance instance = instances.get(instanceIndex);
 
-            // Build URL using ProviderConfig
-            String path = ProviderConfig.getPath(Provider.AZURE_ANTHROPIC, ProviderConfig.Endpoint.CHAT_COMPLETIONS);
-            String url = instance.getBaseUrl() + path;
-
-            // Serialize request to JSON
-            String jsonBody = objectMapper.writeValueAsString(request);
-
-            logger.debug("Calling Claude API: {}", url);
-            logger.debug("Request body: {}", jsonBody);
-
-            // Build HTTP request with Anthropic headers from ProviderConfig
-            Map<String, String> authHeaders = ProviderConfig.getHeaders(
-                    Provider.AZURE_ANTHROPIC,
-                    instance.getApiKey(),
-                    instance.getAzureApiVersion()
-            );
-
-            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json");
-
-            // Add auth headers from ProviderConfig
-            for (Map.Entry<String, String> header : authHeaders.entrySet()) {
-                requestBuilder.header(header.getKey(), header.getValue());
-            }
-
             // Add beta header for structured outputs if output_format is present
+            Map<String, String> extraHeaders = null;
             if (request.getOutputFormat() != null) {
-                requestBuilder.header("anthropic-beta", "structured-outputs-2025-11-13");
+                extraHeaders = new HashMap<>();
+                extraHeaders.put("anthropic-beta", "structured-outputs-2025-11-13");
                 logger.debug("Added structured outputs beta header");
             }
 
-            HttpRequest httpRequest = requestBuilder
-                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .timeout(Duration.ofSeconds(120))
-                    .build();
-
-            // Send request
-            HttpResponse<String> httpResponse = httpClient.send(
-                    httpRequest,
-                    HttpResponse.BodyHandlers.ofString()
-            );
-
-            logger.debug("Claude API response code: {}", httpResponse.statusCode());
-            logger.debug("Claude API response body: {}", httpResponse.body());
-
-            if (httpResponse.statusCode() != 200) {
-                throw new RuntimeException("Claude API error (HTTP " + httpResponse.statusCode() + "): " +
-                        httpResponse.body());
-            }
-
-            // Parse response
-            return objectMapper.readValue(httpResponse.body(), ClaudeResponse.class);
+            // Use httpHelper for the API call
+            return httpHelper.post(
+                    instance,
+                    ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                    request.getModel(),
+                    request,
+                    ClaudeResponse.class,
+                    null,  // no path params
+                    extraHeaders
+            ).join();
 
         } catch (Exception e) {
             logger.error("Claude API call failed", e);
@@ -1749,7 +1703,7 @@ public class AgentService {
      * For OpenAI threads, uses the Assistants API.
      *
      * @param agentId   Agent ID
-     * @param threadRef Thread reference (from {@link #createThread()})
+     * @param threadRef Thread reference (from {@link # createThread()})
      * @param message   User message
      * @return CompletableFuture with agent's response
      */
@@ -1871,7 +1825,7 @@ public class AgentService {
      * For Claude threads, removes the in-memory conversation history.
      * For OpenAI threads, deletes the thread via API.
      *
-     * @param threadRef Thread reference (from {@link #createThread()})
+     * @param threadRef Thread reference (from {@link # createThread()})
      * @return CompletableFuture with deletion result
      */
     public CompletableFuture<Boolean> deleteThread(String threadRef) {
