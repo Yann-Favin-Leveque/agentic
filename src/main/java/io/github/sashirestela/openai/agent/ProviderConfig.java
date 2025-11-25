@@ -55,9 +55,13 @@ public final class ProviderConfig {
 
         // Assistants API (Beta)
         ASSISTANTS,
+        ASSISTANT,            // /assistants/{assistantId} - single assistant
         THREADS,
+        THREAD,               // /threads/{threadId} - single thread
         THREAD_MESSAGES,      // /threads/{threadId}/messages
+        THREAD_MESSAGE,       // /threads/{threadId}/messages/{messageId} - single message
         THREAD_RUNS,          // /threads/{threadId}/runs
+        THREAD_RUN,           // /threads/{threadId}/runs/{runId} - single run
         THREAD_RUN_STEPS,     // /threads/{threadId}/runs/{runId}/steps
 
         // Vector Stores
@@ -68,8 +72,12 @@ public final class ProviderConfig {
         FILES,
         MODELS,
 
+        // Vector Store single
+        VECTOR_STORE,         // /vector_stores/{vectorStoreId} - single vector store
+
         // Other
         BATCHES,
+        BATCH,                // /batches/{batchId} - single batch
         FINE_TUNING,
         MODERATIONS,
         UPLOADS
@@ -155,18 +163,28 @@ public final class ProviderConfig {
             // Assistants API
             case ASSISTANTS:
                 return "/v1/assistants";
+            case ASSISTANT:
+                return "/v1/assistants/{assistantId}";
             case THREADS:
                 return "/v1/threads";
+            case THREAD:
+                return "/v1/threads/{threadId}";
             case THREAD_MESSAGES:
                 return "/v1/threads/{threadId}/messages";
+            case THREAD_MESSAGE:
+                return "/v1/threads/{threadId}/messages/{messageId}";
             case THREAD_RUNS:
                 return "/v1/threads/{threadId}/runs";
+            case THREAD_RUN:
+                return "/v1/threads/{threadId}/runs/{runId}";
             case THREAD_RUN_STEPS:
                 return "/v1/threads/{threadId}/runs/{runId}/steps";
 
             // Vector Stores
             case VECTOR_STORES:
                 return "/v1/vector_stores";
+            case VECTOR_STORE:
+                return "/v1/vector_stores/{vectorStoreId}";
             case VECTOR_STORE_FILES:
                 return "/v1/vector_stores/{vectorStoreId}/files";
 
@@ -179,6 +197,8 @@ public final class ProviderConfig {
             // Other
             case BATCHES:
                 return "/v1/batches";
+            case BATCH:
+                return "/v1/batches/{batchId}";
             case FINE_TUNING:
                 return "/v1/fine_tuning/jobs";
             case MODERATIONS:
@@ -220,18 +240,28 @@ public final class ProviderConfig {
             // Assistants API (NOT model-specific - global endpoints)
             case ASSISTANTS:
                 return "/openai/assistants";
+            case ASSISTANT:
+                return "/openai/assistants/{assistantId}";
             case THREADS:
                 return "/openai/threads";
+            case THREAD:
+                return "/openai/threads/{threadId}";
             case THREAD_MESSAGES:
                 return "/openai/threads/{threadId}/messages";
+            case THREAD_MESSAGE:
+                return "/openai/threads/{threadId}/messages/{messageId}";
             case THREAD_RUNS:
                 return "/openai/threads/{threadId}/runs";
+            case THREAD_RUN:
+                return "/openai/threads/{threadId}/runs/{runId}";
             case THREAD_RUN_STEPS:
                 return "/openai/threads/{threadId}/runs/{runId}/steps";
 
             // Vector Stores (global)
             case VECTOR_STORES:
                 return "/openai/vector_stores";
+            case VECTOR_STORE:
+                return "/openai/vector_stores/{vectorStoreId}";
             case VECTOR_STORE_FILES:
                 return "/openai/vector_stores/{vectorStoreId}/files";
 
@@ -244,6 +274,8 @@ public final class ProviderConfig {
             // Other (global)
             case BATCHES:
                 return "/openai/batches";
+            case BATCH:
+                return "/openai/batches/{batchId}";
             case FINE_TUNING:
                 return "/openai/fine_tuning/jobs";
             case MODERATIONS:

@@ -1,7 +1,7 @@
 package io.github.sashirestela.openai.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.sashirestela.openai.SimpleOpenAI;
+// SimpleOpenAI removed - using HttpHelper directly
 import io.github.sashirestela.openai.common.ResponseFormat;
 import io.github.sashirestela.openai.common.content.ContentPart;
 import io.github.sashirestela.openai.common.content.ContentPart.ContentPartTextAnnotation;
@@ -71,12 +71,16 @@ public class AgentService {
     // Claude/Anthropic virtual thread storage (in-memory conversation history)
     private final Map<String, List<ClaudeRequest.ClaudeMessage>> claudeThreads;
 
-    // HTTP client for Claude API calls
+    // HTTP helper for ALL API calls (replaces SimpleOpenAI/CleverClient)
+    private final HttpHelper httpHelper;
+
+    // Legacy HTTP client (kept for backward compatibility, will be removed)
     private final HttpClient httpClient;
 
     /**
      * Constructs AgentService with the provided configuration.
-     * Initializes OpenAI and Azure clients, loads agent definitions from JSON files.
+     * Initializes instances and loads agent definitions from JSON files.
+     * All API calls are made via HttpHelper (no CleverClient/SimpleOpenAI).
      *
      * @param config AgentService configuration
      * @throws IOException if agent definitions cannot be loaded
@@ -87,8 +91,9 @@ public class AgentService {
         this.instances = new ArrayList<>();
         this.modelIndexes = new ConcurrentHashMap<>();  // One atomic counter per model
         this.globalInstanceIndex = new AtomicInteger(0);  // For model-agnostic operations
+        this.httpHelper = new HttpHelper();  // Single HTTP helper for all API calls
 
-        // === NEW: JSON-based configuration (takes precedence) ===
+        // === JSON-based configuration (takes precedence) ===
         if (config.isUsingJsonConfig()) {
             logger.info("Using JSON-based instance configuration");
             List<InstanceConfig> instanceConfigs = config.parseInstances();
@@ -112,46 +117,10 @@ public class AgentService {
                     providerType = Provider.OPENAI;
                 }
 
-                // For Claude/Anthropic instances, we don't create a SimpleOpenAI client
-                // We use direct HTTP calls instead
-                if (providerType == Provider.AZURE_ANTHROPIC) {
-                    // Store raw URL for Anthropic (no /openai normalization)
-                    String baseUrl = instanceConfig.getUrl();
-                    if (baseUrl.endsWith("/")) {
-                        baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-                    }
+                // Normalize base URL (remove trailing slash)
+                String baseUrl = normalizeBaseUrl(instanceConfig.getUrl());
 
-                    Instance instance = Instance.builder()
-                            .id(instanceConfig.getId())
-                            .baseUrl(baseUrl)
-                            .apiKey(instanceConfig.getKey())
-                            .provider(providerType)
-                            .azureApiVersion(instanceConfig.getApiVersion())
-                            .deployedModels(instanceConfig.getModelsList())
-                            .client(null)  // No SimpleOpenAI client for Anthropic
-                            .build();
-
-                    this.instances.add(instance);
-                    logger.info("Initialized Azure Anthropic instance: {} with models: {}",
-                            instanceConfig.getId(), instanceConfig.getModels());
-                    continue;
-                }
-
-                // For OpenAI/Azure OpenAI instances
-                // Normalize URL (add /openai if Azure and missing)
-                String baseUrl = instanceConfig.isAzureOpenAI()
-                        ? normalizeAzureBaseUrl(instanceConfig.getUrl())
-                        : instanceConfig.getUrl();
-
-                // Create SimpleOpenAI client
-                SimpleOpenAI client = SimpleOpenAI.builder()
-                        .apiKey(instanceConfig.getKey())
-                        .baseUrl(baseUrl)
-                        .isAzure(instanceConfig.isAzureOpenAI())
-                        .azureApiVersion(instanceConfig.getApiVersion())
-                        .build();
-
-                // Create Instance object
+                // Create Instance object (no SimpleOpenAI client - we use HttpHelper)
                 Instance instance = Instance.builder()
                         .id(instanceConfig.getId())
                         .baseUrl(baseUrl)
@@ -159,159 +128,20 @@ public class AgentService {
                         .provider(providerType)
                         .azureApiVersion(instanceConfig.getApiVersion())
                         .deployedModels(instanceConfig.getModelsList())
-                        .client(client)
                         .build();
 
                 this.instances.add(instance);
                 logger.info("Initialized instance: {} ({}) with models: {}",
                         instanceConfig.getId(),
-                        instanceConfig.getProvider(),
+                        providerType,
                         instanceConfig.getModels());
             }
 
             logger.info("Initialized {} instance(s) from JSON configuration", this.instances.size());
-
-            // Skip legacy configuration if JSON is provided
-            if (!this.instances.isEmpty()) {
-                // Initialize rate limiter (must be done before agent loading)
-                // (Cannot be in helper method because rateLimiter is final)
-                // This is duplicated code from the end of the constructor
-                // Initialize rate limiter
-                this.rateLimiter = new RateLimiter(config.getRequestsPerSecond());
-                logger.info("Initialized rate limiter: {} requests/second", config.getRequestsPerSecond());
-
-                // Initialize Claude virtual threads storage
-                this.claudeThreads = new ConcurrentHashMap<>();
-                this.httpClient = HttpClient.newBuilder()
-                        .connectTimeout(Duration.ofSeconds(30))
-                        .build();
-                logger.info("Initialized Claude virtual thread storage and HTTP client");
-
-                // Load agent definitions if folder path is provided
-                if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
-                    loadAgentDefinitions();
-                }
-                return;
-            }
-        }
-
-        // === LEGACY: Initialize from separate configuration fields ===
-        logger.info("Using legacy configuration format");
-
-        // Initialize OpenAI instances (if configured)
-        if (config.getOpenAiApiKeys() != null && !config.getOpenAiApiKeys().isEmpty()) {
-            // Parse deployed models from config (default to common models if not specified)
-            String modelsConfig = config.getOpenAiModels();
-            List<String> deployedModels = modelsConfig != null && !modelsConfig.trim().isEmpty()
-                    ? Arrays.asList(modelsConfig.split(","))
-                    : List.of("gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "dall-e-3");
-
-            for (int i = 0; i < config.getOpenAiApiKeys().size(); i++) {
-                String apiKey = config.getOpenAiApiKeys().get(i);
-
-                // Use provided URL or default to standard OpenAI endpoint
-                String baseUrl = "https://api.openai.com/v1";
-                if (config.getOpenAiBaseUrls() != null && i < config.getOpenAiBaseUrls().size()) {
-                    String providedUrl = config.getOpenAiBaseUrls().get(i);
-                    if (providedUrl != null && !providedUrl.trim().isEmpty()) {
-                        baseUrl = providedUrl;
-                    }
-                }
-
-                SimpleOpenAI client = SimpleOpenAI.builder()
-                        .apiKey(apiKey)
-                        .baseUrl(baseUrl)
-                        .isAzure(false)
-                        .build();
-
-                Instance instance = Instance.builder()
-                        .id("openai-" + i)
-                        .baseUrl(baseUrl)
-                        .apiKey(apiKey)
-                        .provider(Provider.OPENAI)
-                        .azureApiVersion(null)  // Not Azure
-                        .deployedModels(deployedModels)
-                        .client(client)
-                        .build();
-
-                this.instances.add(instance);
-            }
-            logger.info("Initialized {} OpenAI instance(s) with models: {}",
-                    config.getOpenAiApiKeys().size(), deployedModels);
-        }
-
-        // Initialize Azure chat instances (if configured)
-        if (config.getAzureApiKeys() != null && !config.getAzureApiKeys().isEmpty()) {
-            // Parse deployed models from config (default to gpt-4o if not specified)
-            String azureModelsConfig = config.getAzureModels();
-            List<String> azureDeployedModels = azureModelsConfig != null && !azureModelsConfig.trim().isEmpty()
-                    ? Arrays.asList(azureModelsConfig.split(","))
-                    : List.of("gpt-4o");
-
-            for (int i = 0; i < config.getAzureApiKeys().size(); i++) {
-                // Normalize Azure baseUrl to ensure it contains /openai
-                String normalizedBaseUrl = normalizeAzureBaseUrl(config.getAzureBaseUrls().get(i));
-
-                SimpleOpenAI client = SimpleOpenAI.builder()
-                        .apiKey(config.getAzureApiKeys().get(i))
-                        .baseUrl(normalizedBaseUrl)
-                        .isAzure(true)
-                        .azureApiVersion(config.getAzureApiVersion())
-                        .build();
-
-                Instance instance = Instance.builder()
-                        .id("azure-chat-" + i)
-                        .baseUrl(normalizedBaseUrl)
-                        .apiKey(config.getAzureApiKeys().get(i))
-                        .provider(Provider.AZURE)
-                        .azureApiVersion(config.getAzureApiVersion())
-                        .deployedModels(azureDeployedModels)
-                        .client(client)
-                        .build();
-
-                this.instances.add(instance);
-            }
-            logger.info("Initialized {} Azure OpenAI chat instance(s) with models: {}",
-                    config.getAzureApiKeys().size(), azureDeployedModels);
-        }
-
-        // Initialize Azure DALL-E instances (if configured) - SEPARATE deployment
-        if (config.getAzureDalleApiKeys() != null && !config.getAzureDalleApiKeys().isEmpty()) {
-            // Parse deployed models from config (default to dall-e-3 if not specified)
-            String azureDalleModelsConfig = config.getAzureDalleModels();
-            List<String> azureDalleDeployedModels = azureDalleModelsConfig != null && !azureDalleModelsConfig.trim().isEmpty()
-                    ? Arrays.asList(azureDalleModelsConfig.split(","))
-                    : List.of("dall-e-3");
-
-            for (int i = 0; i < config.getAzureDalleApiKeys().size(); i++) {
-                // Normalize Azure baseUrl to ensure it contains /openai
-                String normalizedBaseUrl = normalizeAzureBaseUrl(config.getAzureDalleBaseUrls().get(i));
-
-                SimpleOpenAI client = SimpleOpenAI.builder()
-                        .apiKey(config.getAzureDalleApiKeys().get(i))
-                        .baseUrl(normalizedBaseUrl)
-                        .isAzure(true)
-                        .azureApiVersion(config.getAzureDalleApiVersion())
-                        .build();
-
-                Instance instance = Instance.builder()
-                        .id("azure-dalle-" + i)
-                        .baseUrl(normalizedBaseUrl)
-                        .apiKey(config.getAzureDalleApiKeys().get(i))
-                        .provider(Provider.AZURE)
-                        .azureApiVersion(config.getAzureDalleApiVersion())
-                        .deployedModels(azureDalleDeployedModels)
-                        .client(client)
-                        .build();
-
-                this.instances.add(instance);
-            }
-            logger.info("Initialized {} Azure DALL-E instance(s) with models: {}",
-                    config.getAzureDalleApiKeys().size(), azureDalleDeployedModels);
         }
 
         if (this.instances.isEmpty()) {
-            throw new IllegalStateException("No OpenAI or Azure instances configured");
+            throw new IllegalStateException("No instances configured. Set OPENAI_INSTANCES environment variable.");
         }
 
         logger.info("Total instances: {} | Models available: {}",
@@ -330,7 +160,7 @@ public class AgentService {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
-        logger.info("Initialized Claude virtual thread storage and HTTP client");
+        logger.info("Initialized Claude virtual thread storage");
 
         // Load agent definitions if folder path is provided
         if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
@@ -430,41 +260,6 @@ public class AgentService {
                                 .distinct()
                                 .collect(java.util.stream.Collectors.toList()))
         );
-    }
-
-    /**
-     * Creates a client for Azure chat completion or image generation.
-     * For Azure, these endpoints require /deployments/{model}/ in the URL path.
-     * For OpenAI, returns the standard client.
-     *
-     * Uses ProviderConfig to determine if model needs to be in path.
-     *
-     * @param model Model name (used as deployment name for Azure)
-     * @param instanceIndex Index of the instance to use
-     * @return SimpleOpenAI client configured for the endpoint
-     */
-    private SimpleOpenAI getClientForChatOrImage(String model, int instanceIndex) {
-        Instance instance = instances.get(instanceIndex);
-
-        // For OpenAI instances, just return the client directly
-        if (instance.getProvider() == Provider.OPENAI) {
-            return instance.getClient();
-        }
-
-        // For Azure instances, build deployment URL using ProviderConfig pattern
-        // We need just the base + /openai/deployments/{model} part (endpoint is added by CleverClient)
-        String baseUrl = normalizeBaseUrl(instance.getBaseUrl());
-        String deploymentUrl = baseUrl + "/openai/deployments/" + model;
-
-        logger.debug("Creating Azure chat/image client for model '{}': {} (deployment URL: {})",
-                     model, instance.getId(), deploymentUrl);
-
-        return SimpleOpenAI.builder()
-                .baseUrl(deploymentUrl)
-                .apiKey(instance.getApiKey())
-                .isAzure(true)
-                .azureApiVersion(instance.getAzureApiVersion())
-                .build();
     }
 
     /**
@@ -783,8 +578,7 @@ public class AgentService {
                         continue;
                     }
 
-                    // Use per-model Azure client (handles Azure deployment URLs correctly)
-                    SimpleOpenAI client = getOrCreateAzureClientForModel(agent.getModel(), i);
+                    // Create assistant via HttpHelper (global endpoint, no model in path)
                     Assistant assistant;
 
                     String existingAssistantId = agent.getAssistantIds().get(i);
@@ -798,23 +592,26 @@ public class AgentService {
                                     .temperature(agent.getTemperature())
                                     .responseFormat(request.getResponseFormat())
                                     .build();
-                            assistant = client.assistants()
-                                    .modify(existingAssistantId, modifyRequest)
-                                    .join();
+                            Map<String, String> pathParams = new HashMap<>();
+                            pathParams.put("assistantId", existingAssistantId);
+                            assistant = httpHelper.post(instance, ProviderConfig.Endpoint.ASSISTANT,
+                                    null, modifyRequest, Assistant.class, pathParams).join();
                             logger.info("✅ Updated assistant on instance {}: {} ({})", i, agent.getName(), assistant.getId());
                         } catch (Exception e) {
                             // If modify fails (404 = assistant doesn't exist), create new assistant
                             logger.warn("⚠️ Failed to modify assistant {} on instance {} ({}), creating new assistant...",
                                     existingAssistantId, i, e.getMessage());
-                            assistant = client.assistants().create(request).join();
+                            assistant = httpHelper.post(instance, ProviderConfig.Endpoint.ASSISTANTS,
+                                    null, request, Assistant.class).join();
                             agent.getAssistantIds().set(i, assistant.getId());
                             assistantIdsChanged = true;
                             logger.info("✅ Created new assistant on instance {}: {} ({}) to replace {}",
                                     i, agent.getName(), assistant.getId(), existingAssistantId);
                         }
                     } else {
-                        // Create new assistant
-                        assistant = client.assistants().create(request).join();
+                        // Create new assistant via HttpHelper
+                        assistant = httpHelper.post(instance, ProviderConfig.Endpoint.ASSISTANTS,
+                                null, request, Assistant.class).join();
                         agent.getAssistantIds().set(i, assistant.getId());
                         assistantIdsChanged = true;
                         logger.info("✅ Created assistant on instance {}: {} ({})", i, agent.getName(), assistant.getId());
@@ -991,53 +788,6 @@ public class AgentService {
                 throw new RuntimeException("Failed to reload agent: " + agentId, e);
             }
         });
-    }
-
-    /**
-     * Normalizes Azure base URL to ensure it contains /openai path.
-     * Azure OpenAI requires URLs in format: https://instance.openai.azure.com/openai
-     *
-     * @param baseUrl Base Azure URL (e.g., "https://instance.openai.azure.com")
-     * @return Normalized URL with /openai path (e.g., "https://instance.openai.azure.com/openai")
-     */
-    private String normalizeAzureBaseUrl(String baseUrl) {
-        // Remove trailing slash if present
-        String cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-
-        // Add /openai if not already present
-        if (!cleanBaseUrl.endsWith("/openai") && !cleanBaseUrl.contains("/openai/")) {
-            return cleanBaseUrl + "/openai";
-        }
-        return cleanBaseUrl;
-    }
-
-    /**
-     * Gets or creates an Azure client configured for a specific model deployment.
-     * This is necessary because Azure OpenAI requires the model deployment name in the URL.
-     *
-     * @param model Model name (e.g., "gpt-4o", "gpt-4o-mini")
-     * @param index Instance index
-     * @return SimpleOpenAI client configured for the model deployment
-     */
-    private SimpleOpenAI getOrCreateAzureClientForModel(String model, int index) {
-        Instance instance = instances.get(index);
-
-        // If OpenAI provider, return client directly
-        if (instance.getProvider() == Provider.OPENAI) {
-            return instance.getClient();
-        }
-
-        // For Azure, build deployment URL with model name
-        String baseUrl = normalizeBaseUrl(instance.getBaseUrl());
-        String deploymentUrl = baseUrl + "/openai/deployments/" + model;
-
-        // Create Azure client with model-specific deployment URL
-        return SimpleOpenAI.builder()
-                .apiKey(instance.getApiKey())
-                .baseUrl(deploymentUrl)
-                .isAzure(true)
-                .azureApiVersion(instance.getAzureApiVersion())
-                .build();
     }
 
     /**
@@ -1219,7 +969,7 @@ public class AgentService {
     }
 
     /**
-     * Executes a request using OpenAI client.
+     * Executes a request using HttpHelper (replaces SimpleOpenAI client).
      */
     private String executeOpenAIRequest(
             Agent agent,
@@ -1229,12 +979,15 @@ public class AgentService {
 
         // Get instance that has this agent's model
         int instanceIdx = getNextInstanceForModel(agent.getModel());
-        SimpleOpenAI client = instances.get(instanceIdx).getClient();
+        Instance instance = instances.get(instanceIdx);
 
         // Get or create thread
         String actualThreadId = threadId;
         if (actualThreadId == null || actualThreadId.isEmpty()) {
-            var thread = client.threads().create(ThreadRequest.builder().build()).join();
+            io.github.sashirestela.openai.domain.assistant.Thread thread = httpHelper.post(
+                    instance, ProviderConfig.Endpoint.THREADS, null,
+                    ThreadRequest.builder().build(),
+                    io.github.sashirestela.openai.domain.assistant.Thread.class).join();
             actualThreadId = thread.getId();
             logger.debug("Created new thread: {}", actualThreadId);
         }
@@ -1244,7 +997,10 @@ public class AgentService {
                 .role(ThreadMessageRole.USER)
                 .content(userMessage)
                 .build();
-        client.threadMessages().create(actualThreadId, messageRequest).join();
+        Map<String, String> threadParams = new HashMap<>();
+        threadParams.put("threadId", actualThreadId);
+        httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_MESSAGES, null,
+                messageRequest, io.github.sashirestela.openai.domain.assistant.ThreadMessage.class, threadParams).join();
 
         // Get assistant ID for this specific instance
         String assistantId = null;
@@ -1263,23 +1019,25 @@ public class AgentService {
         }
 
         ThreadRunRequest runRequest = runBuilder.build();
-        ThreadRun run = client.threadRuns().create(actualThreadId, runRequest).join();
+        ThreadRun run = httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_RUNS, null,
+                runRequest, ThreadRun.class, threadParams).join();
 
-        // Poll for completion
-        ThreadRun completedRun = pollForCompletion(client, actualThreadId, run.getId(), agent.getResponseTimeout());
+        // Poll for completion using HttpHelper
+        ThreadRun completedRun = pollForCompletion(instance, actualThreadId, run.getId(), agent.getResponseTimeout());
 
         // Check status
         if (completedRun.getStatus() != RunStatus.COMPLETED) {
             throw new RuntimeException("Run failed with status: " + completedRun.getStatus());
         }
 
-        // Get response
-        var messages = client.threadMessages().getList(actualThreadId).join();
-        if (messages.isEmpty()) {
+        // Get response - need to add a list response type wrapper
+        ThreadMessagesResponse messagesResponse = httpHelper.get(instance, ProviderConfig.Endpoint.THREAD_MESSAGES,
+                null, ThreadMessagesResponse.class, threadParams).join();
+        if (messagesResponse.getData() == null || messagesResponse.getData().isEmpty()) {
             throw new RuntimeException("No messages returned");
         }
 
-        return extractMessageContent(messages.get(0).getContent());
+        return extractMessageContent(messagesResponse.getData().get(0).getContent());
     }
 
     /**
@@ -1325,8 +1083,6 @@ public class AgentService {
             return executeClaudeRequest(agent, userMessage, instanceIdx);
         }
 
-        SimpleOpenAI client = instance.getClient();
-
         // Get assistant ID for this specific instance
         String assistantId = null;
         if (agent.getAssistantIds() != null && instanceIdx < agent.getAssistantIds().size()) {
@@ -1341,17 +1097,23 @@ public class AgentService {
 
         // Create thread if needed (actualThreadId already set from decoding logic above)
         if (actualThreadId == null || actualThreadId.isEmpty()) {
-            var thread = client.threads().create(ThreadRequest.builder().build()).join();
+            io.github.sashirestela.openai.domain.assistant.Thread thread = httpHelper.post(
+                    instance, ProviderConfig.Endpoint.THREADS, null,
+                    ThreadRequest.builder().build(),
+                    io.github.sashirestela.openai.domain.assistant.Thread.class).join();
             actualThreadId = thread.getId();
             logger.debug("Created new thread {} on instance {}", actualThreadId, instanceIdx);
         }
 
         // Add message to thread
+        Map<String, String> threadParams = new HashMap<>();
+        threadParams.put("threadId", actualThreadId);
         var messageRequest = ThreadMessageRequest.builder()
                 .role(ThreadMessageRole.USER)
                 .content(userMessage)
                 .build();
-        client.threadMessages().create(actualThreadId, messageRequest).join();
+        httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_MESSAGES, null,
+                messageRequest, io.github.sashirestela.openai.domain.assistant.ThreadMessage.class, threadParams).join();
 
         // Create and execute run
         ThreadRunRequest.ThreadRunRequestBuilder runBuilder = ThreadRunRequest.builder()
@@ -1362,10 +1124,11 @@ public class AgentService {
         }
 
         ThreadRunRequest runRequest = runBuilder.build();
-        ThreadRun run = client.threadRuns().create(actualThreadId, runRequest).join();
+        ThreadRun run = httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_RUNS, null,
+                runRequest, ThreadRun.class, threadParams).join();
 
-        // Poll for completion
-        ThreadRun completedRun = pollForCompletionAzure(client, actualThreadId, run.getId(),
+        // Poll for completion using HttpHelper
+        ThreadRun completedRun = pollForCompletion(instance, actualThreadId, run.getId(),
                 agent.getResponseTimeout());
 
         // Check status
@@ -1374,19 +1137,20 @@ public class AgentService {
         }
 
         // Get response
-        var messages = client.threadMessages().getList(actualThreadId).join();
-        if (messages.isEmpty()) {
+        ThreadMessagesResponse messagesResponse = httpHelper.get(instance, ProviderConfig.Endpoint.THREAD_MESSAGES,
+                null, ThreadMessagesResponse.class, threadParams).join();
+        if (messagesResponse.getData() == null || messagesResponse.getData().isEmpty()) {
             throw new RuntimeException("No messages returned");
         }
 
-        return extractMessageContent(messages.get(0).getContent());
+        return extractMessageContent(messagesResponse.getData().get(0).getContent());
     }
 
     /**
-     * Polls for run completion (OpenAI).
+     * Polls for run completion using HttpHelper.
      */
     private ThreadRun pollForCompletion(
-            SimpleOpenAI client,
+            Instance instance,
             String threadId,
             String runId,
             long timeoutSeconds) throws Exception {
@@ -1394,39 +1158,20 @@ public class AgentService {
         long startTime = System.currentTimeMillis();
         long timeoutMs = timeoutSeconds * 1000;
 
-        while (true) {
-            ThreadRun run = client.threadRuns().getOne(threadId, runId).join();
-            RunStatus status = run.getStatus();
-
-            if (status == RunStatus.COMPLETED ||
-                status == RunStatus.FAILED ||
-                status == RunStatus.CANCELLED ||
-                status == RunStatus.EXPIRED) {
-                return run;
-            }
-
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
-                throw new RuntimeException("Request timeout after " + timeoutSeconds + " seconds");
-            }
-
-            Thread.sleep(1000); // Poll every second
-        }
-    }
-
-    /**
-     * Polls for run completion (Azure).
-     */
-    private ThreadRun pollForCompletionAzure(
-            SimpleOpenAI client,
-            String threadId,
-            String runId,
-            long timeoutSeconds) throws Exception {
-
-        long startTime = System.currentTimeMillis();
-        long timeoutMs = timeoutSeconds * 1000;
+        Map<String, String> pathParams = new HashMap<>();
+        pathParams.put("threadId", threadId);
+        pathParams.put("runId", runId);
 
         while (true) {
-            ThreadRun run = client.threadRuns().getOne(threadId, runId).join();
+            // GET /threads/{threadId}/runs/{runId}
+            ThreadRun run = httpHelper.get(
+                    instance,
+                    ProviderConfig.Endpoint.THREAD_RUN,
+                    null,  // No model needed for this endpoint
+                    ThreadRun.class,
+                    pathParams
+            ).join();
+
             RunStatus status = run.getStatus();
 
             if (status == RunStatus.COMPLETED ||
@@ -1533,7 +1278,10 @@ public class AgentService {
 
                 // Create on specific instance and encode instance index (global round-robin)
                 int instIndex = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
-                var vectorStore = instances.get(instIndex).getClient().vectorStores().create(request).join();
+                Instance instance = instances.get(instIndex);
+                io.github.sashirestela.openai.domain.assistant.VectorStore vectorStore = httpHelper.post(
+                        instance, ProviderConfig.Endpoint.VECTOR_STORES, null,
+                        request, io.github.sashirestela.openai.domain.assistant.VectorStore.class).join();
                 String vectorStoreId = vectorStore.getId();
 
                 logger.info("Created vector store: {} ({}) on instance {}", name, vectorStoreId, instIndex);
@@ -1564,7 +1312,10 @@ public class AgentService {
                 int instanceIndex = extractInstanceIndex(vectorStoreRef);
                 String actualVectorStoreId = extractVectorStoreId(vectorStoreRef);
 
-                instances.get(instanceIndex).getClient().vectorStores().delete(actualVectorStoreId).join();
+                Instance instance = instances.get(instanceIndex);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("vectorStoreId", actualVectorStoreId);
+                httpHelper.delete(instance, ProviderConfig.Endpoint.VECTOR_STORES, null, pathParams).join();
                 logger.info("Deleted vector store: {} from instance {}", actualVectorStoreId, instanceIndex);
                 return true;
             } catch (Exception e) {
@@ -1673,8 +1424,11 @@ public class AgentService {
                     return encodeWithInstance(instIndex, threadId);
                 }
 
-                // OpenAI: create real thread
-                var thread = instance.getClient().threads().create(ThreadRequest.builder().build()).join();
+                // OpenAI: create real thread via HttpHelper
+                io.github.sashirestela.openai.domain.assistant.Thread thread = httpHelper.post(
+                        instance, ProviderConfig.Endpoint.THREADS, null,
+                        ThreadRequest.builder().build(),
+                        io.github.sashirestela.openai.domain.assistant.Thread.class).join();
                 String threadId = thread.getId();
 
                 logger.debug("Created thread {} on instance {} (model: {})", threadId, instIndex, model);
@@ -1718,15 +1472,18 @@ public class AgentService {
                     return sendMessageToClaudeThread(agent, actualThreadId, message, instanceIndex);
                 }
 
-                // OpenAI: use Assistants API
+                // OpenAI: use Assistants API via HttpHelper
+                Map<String, String> threadParams = new HashMap<>();
+                threadParams.put("threadId", actualThreadId);
+
                 // Add message to thread
                 var messageRequest = ThreadMessageRequest.builder()
                         .role(ThreadMessageRole.USER)
                         .content(message)
                         .build();
 
-                SimpleOpenAI client = instance.getClient();
-                client.threadMessages().create(actualThreadId, messageRequest).join();
+                httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_MESSAGES, null,
+                        messageRequest, io.github.sashirestela.openai.domain.assistant.ThreadMessage.class, threadParams).join();
 
                 // Create run - get assistant ID for this instance
                 String assistantId = null;
@@ -1743,15 +1500,17 @@ public class AgentService {
                         .temperature(agent.getTemperature())
                         .build();
 
-                ThreadRun run = client.threadRuns().create(actualThreadId, runRequest).join();
+                ThreadRun run = httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_RUNS, null,
+                        runRequest, ThreadRun.class, threadParams).join();
 
-                // Poll for completion
-                ThreadRun completedRun = pollForCompletionAzure(client,
+                // Poll for completion using HttpHelper
+                ThreadRun completedRun = pollForCompletion(instance,
                         actualThreadId, run.getId(), agent.getResponseTimeout());
 
                 // Get response
-                var messages = client.threadMessages().getList(actualThreadId).join();
-                return extractResponseFromMessages(messages);
+                ThreadMessagesResponse messagesResponse = httpHelper.get(instance, ProviderConfig.Endpoint.THREAD_MESSAGES,
+                        null, ThreadMessagesResponse.class, threadParams).join();
+                return extractResponseFromMessagesResponse(messagesResponse);
 
             } catch (Exception e) {
                 logger.error("Failed to send message to thread {}", threadRef, e);
@@ -1829,8 +1588,11 @@ public class AgentService {
                     return removed;
                 }
 
-                // OpenAI: delete via API
-                instances.get(instanceIndex).getClient().threads().delete(actualThreadId).join();
+                // OpenAI: delete via API using HttpHelper
+                Instance instance = instances.get(instanceIndex);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("threadId", actualThreadId);
+                httpHelper.delete(instance, ProviderConfig.Endpoint.THREAD, null, pathParams).join();
                 logger.debug("Deleted thread {} from instance {}", actualThreadId, instanceIndex);
                 return true;
             } catch (Exception e) {
@@ -1870,16 +1632,22 @@ public class AgentService {
             try {
                 // Create thread on instance that has this agent's model
                 int instanceIdx = getNextInstanceForModel(agent.getModel());
-                SimpleOpenAI client = instances.get(instanceIdx).getClient();
-                var thread = client.threads().create(ThreadRequest.builder().build()).join();
+                Instance instance = instances.get(instanceIdx);
+                io.github.sashirestela.openai.domain.assistant.Thread thread = httpHelper.post(
+                        instance, ProviderConfig.Endpoint.THREADS, null,
+                        ThreadRequest.builder().build(),
+                        io.github.sashirestela.openai.domain.assistant.Thread.class).join();
                 String threadId = thread.getId();
 
                 // Add message
+                Map<String, String> threadParams = new HashMap<>();
+                threadParams.put("threadId", threadId);
                 var messageRequest = ThreadMessageRequest.builder()
                         .role(ThreadMessageRole.USER)
                         .content(userMessage)
                         .build();
-                client.threadMessages().create(threadId, messageRequest).join();
+                httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_MESSAGES, null,
+                        messageRequest, io.github.sashirestela.openai.domain.assistant.ThreadMessage.class, threadParams).join();
 
                 // Get assistant ID for this specific instance
                 String assistantId = null;
@@ -1895,10 +1663,11 @@ public class AgentService {
                         .temperature(agent.getTemperature())
                         .build();
 
-                ThreadRun run = client.threadRuns().create(threadId, runRequest).join();
+                ThreadRun run = httpHelper.post(instance, ProviderConfig.Endpoint.THREAD_RUNS, null,
+                        runRequest, ThreadRun.class, threadParams).join();
 
-                // Poll for completion
-                ThreadRun completedRun = pollForCompletion(client, threadId, run.getId(),
+                // Poll for completion using HttpHelper
+                ThreadRun completedRun = pollForCompletion(instance, threadId, run.getId(),
                         agent.getResponseTimeout());
 
                 if (completedRun.getStatus() != RunStatus.COMPLETED) {
@@ -1906,12 +1675,13 @@ public class AgentService {
                 }
 
                 // Get response
-                var messages = client.threadMessages().getList(threadId).join();
-                if (messages.isEmpty()) {
+                ThreadMessagesResponse messagesResponse = httpHelper.get(instance, ProviderConfig.Endpoint.THREAD_MESSAGES,
+                        null, ThreadMessagesResponse.class, threadParams).join();
+                if (messagesResponse.getData() == null || messagesResponse.getData().isEmpty()) {
                     throw new RuntimeException("No messages returned");
                 }
 
-                return extractMessageContent(messages.get(0).getContent());
+                return extractMessageContent(messagesResponse.getData().get(0).getContent());
 
             } catch (Exception e) {
                 logger.error("Request with vector storage failed for agent: {}", agentId, e);
@@ -1946,7 +1716,7 @@ public class AgentService {
                     return executeChatCompletionClaude(model, messages, temperature, instanceIdx);
                 }
 
-                // OpenAI: use standard chat completions API
+                // OpenAI: use standard chat completions API via HttpHelper
                 ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
                         .model(model)
                         .messages(messages);
@@ -1957,8 +1727,9 @@ public class AgentService {
 
                 ChatRequest request = requestBuilder.build();
 
-                SimpleOpenAI client = getClientForChatOrImage(model, instanceIdx);
-                Chat chatResponse = client.chatCompletions().create(request).join();
+                // POST to /chat/completions with model in path for Azure
+                Chat chatResponse = httpHelper.post(instance, ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                        model, request, Chat.class).join();
 
                 if (chatResponse.getChoices() == null || chatResponse.getChoices().isEmpty()) {
                     throw new RuntimeException("No choices returned in chat completion");
@@ -2071,8 +1842,11 @@ public class AgentService {
 
                 // Get instance that has this model deployed
                 int instanceIdx = getNextInstanceForModel(model);
-                SimpleOpenAI client = getClientForChatOrImage(model, instanceIdx);
-                Chat chatResponse = client.chatCompletions().create(request).join();
+                Instance instance = instances.get(instanceIdx);
+
+                // POST to /chat/completions with model in path for Azure
+                Chat chatResponse = httpHelper.post(instance, ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                        model, request, Chat.class).join();
 
                 if (chatResponse.getChoices() == null || chatResponse.getChoices().isEmpty()) {
                     throw new RuntimeException("No choices returned in structured chat completion");
@@ -2196,8 +1970,11 @@ public class AgentService {
 
                 io.github.sashirestela.openai.domain.batch.BatchRequest request = builder.build();
                 // Batch API typically uses gpt-4o - route to instance with that model
-                SimpleOpenAI client = instances.get(getNextInstanceForModel("gpt-4o")).getClient();
-                io.github.sashirestela.openai.domain.batch.Batch batch = client.batches().create(request).join();
+                int instanceIdx = getNextInstanceForModel("gpt-4o");
+                Instance instance = instances.get(instanceIdx);
+                io.github.sashirestela.openai.domain.batch.Batch batch = httpHelper.post(
+                        instance, ProviderConfig.Endpoint.BATCHES, null,
+                        request, io.github.sashirestela.openai.domain.batch.Batch.class).join();
 
                 logger.info("Created batch: {} with status: {}", batch.getId(), batch.getStatus());
                 return batch;
@@ -2223,8 +2000,12 @@ public class AgentService {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
-                SimpleOpenAI client = instances.get(getNextInstanceForModel("gpt-4o")).getClient();
-                return client.batches().getOne(batchId).join();
+                int instanceIdx = getNextInstanceForModel("gpt-4o");
+                Instance instance = instances.get(instanceIdx);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("batchId", batchId);
+                return httpHelper.get(instance, ProviderConfig.Endpoint.BATCH, null,
+                        io.github.sashirestela.openai.domain.batch.Batch.class, pathParams).join();
             } catch (Exception e) {
                 logger.error("Failed to get batch: {}", batchId, e);
                 throw new RuntimeException("Failed to get batch: " + batchId, e);
@@ -2246,8 +2027,15 @@ public class AgentService {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
-                SimpleOpenAI client = instances.get(getNextInstanceForModel("gpt-4o")).getClient();
-                io.github.sashirestela.openai.domain.batch.Batch batch = client.batches().cancel(batchId).join();
+                int instanceIdx = getNextInstanceForModel("gpt-4o");
+                Instance instance = instances.get(instanceIdx);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("batchId", batchId);
+                // POST to /batches/{batchId}/cancel
+                io.github.sashirestela.openai.domain.batch.Batch batch = httpHelper.post(
+                        instance, ProviderConfig.Endpoint.BATCH, null,
+                        Map.of("action", "cancel"),
+                        io.github.sashirestela.openai.domain.batch.Batch.class, pathParams).join();
                 logger.info("Cancelled batch: {}", batchId);
                 return batch;
             } catch (Exception e) {
@@ -2275,8 +2063,11 @@ public class AgentService {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
-                SimpleOpenAI client = instances.get(getNextInstanceForModel("gpt-4o")).getClient();
-                return client.batches().getList(after, limit).join();
+                int instanceIdx = getNextInstanceForModel("gpt-4o");
+                Instance instance = instances.get(instanceIdx);
+                // GET /batches - BatchListResponse extends Page directly
+                return httpHelper.get(instance, ProviderConfig.Endpoint.BATCHES, null,
+                        BatchListResponse.class, null).join();
             } catch (Exception e) {
                 logger.error("Failed to list batches", e);
                 throw new RuntimeException("Failed to list batches", e);
@@ -2307,9 +2098,15 @@ public class AgentService {
                 long startTime = System.currentTimeMillis();
                 long timeoutMs = timeoutSeconds * 1000;
 
+                int instanceIdx = getNextInstanceForModel("gpt-4o");
+                Instance instance = instances.get(instanceIdx);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("batchId", batchId);
+
                 while (true) {
-                    SimpleOpenAI client = instances.get(getNextInstanceForModel("gpt-4o")).getClient();
-                    io.github.sashirestela.openai.domain.batch.Batch batch = client.batches().getOne(batchId).join();
+                    io.github.sashirestela.openai.domain.batch.Batch batch = httpHelper.get(
+                            instance, ProviderConfig.Endpoint.BATCH, null,
+                            io.github.sashirestela.openai.domain.batch.Batch.class, pathParams).join();
                     String status = batch.getStatus();
 
                     logger.debug("Batch {} status: {}", batchId, status);
@@ -2388,7 +2185,7 @@ public class AgentService {
 
                 // Get instance that has this image model deployed
                 int instanceIdx = getNextInstanceForModel(model);
-                SimpleOpenAI instance = getClientForChatOrImage(model.toString(), instanceIdx);
+                Instance instance = instances.get(instanceIdx);
 
                 // Create image request with b64_json response format
                 ImageRequest imageRequest = ImageRequest.builder()
@@ -2402,15 +2199,16 @@ public class AgentService {
 
                 logger.debug("Generating image with model: {}, size: {}, quality: {}", model, size, quality);
 
-                // Call DALL-E API
-                List<Image> response = instance.images().create(imageRequest).join();
+                // Call DALL-E API via HttpHelper
+                ImageGenerationResponse response = httpHelper.post(instance, ProviderConfig.Endpoint.IMAGES_GENERATIONS,
+                        model, imageRequest, ImageGenerationResponse.class).join();
 
-                if (response == null || response.isEmpty()) {
+                if (response == null || response.getData() == null || response.getData().isEmpty()) {
                     throw new RuntimeException("Image generation returned empty response");
                 }
 
                 // Extract base64 image data
-                String base64Image = response.get(0).getB64Json();
+                String base64Image = response.getData().get(0).getB64Json();
                 logger.debug("Image generated successfully (base64 length: {})",
                     base64Image != null ? base64Image.length() : 0);
 
@@ -2477,14 +2275,11 @@ public class AgentService {
                                 .input(text)
                                 .build();
 
-                // Call embeddings API
-                // For Azure, we need to use deployment-specific client (like chat/images)
-                int instanceIndex = instances.indexOf(selectedInstance);
-                logger.debug("Creating embedding client for instance {} ({}), provider: {}",
-                        instanceIndex, selectedInstance.getId(), selectedInstance.getProvider());
-                SimpleOpenAI embeddingClient = getClientForChatOrImage(model, instanceIndex);
-                logger.debug("Calling embeddings API with model: {}", model);
-                var response = embeddingClient.embeddings().create(request).join();
+                // Call embeddings API via HttpHelper
+                logger.debug("Calling embeddings API with model: {} on instance {}",
+                        model, selectedInstance.getId());
+                EmbeddingResponse response = httpHelper.post(selectedInstance, ProviderConfig.Endpoint.EMBEDDINGS,
+                        model, request, EmbeddingResponse.class).join();
 
                 if (response != null && response.getData() != null && !response.getData().isEmpty()) {
                     // Extract embedding vector
@@ -2521,40 +2316,32 @@ public class AgentService {
         return generateEmbedding(text, "text-embedding-3-small");
     }
 
-    // ==================== CLIENT ACCESS ====================
+    // ==================== INSTANCE ACCESS ====================
 
     /**
-     * Get a SimpleOpenAI client from the first available instance.
-     * This is useful for direct API access (e.g., for custom operations not covered by AgentService).
-     *
-     * <p><strong>Note:</strong> When using this client directly, you bypass AgentService's
-     * rate limiting and load balancing. Use with caution.</p>
-     *
-     * @return SimpleOpenAI client
-     * @throws IllegalStateException if no instances are configured
-     */
-    public SimpleOpenAI getSimpleOpenAI() {
-        if (instances.isEmpty()) {
-            throw new IllegalStateException("No OpenAI instances configured. Cannot provide client.");
-        }
-        return instances.get(0).getClient();
-    }
-
-    /**
-     * Get a SimpleOpenAI client from a specific instance by ID.
+     * Get an instance by ID.
      *
      * @param instanceId Instance ID (e.g., "openai-main", "azure-eastus")
-     * @return SimpleOpenAI client for the specified instance
+     * @return Instance configuration
      * @throws IllegalArgumentException if instance ID not found
      */
-    public SimpleOpenAI getSimpleOpenAI(String instanceId) {
+    public Instance getInstance(String instanceId) {
         return instances.stream()
                 .filter(i -> i.getId().equals(instanceId))
                 .findFirst()
-                .map(Instance::getClient)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Instance not found: " + instanceId + ". Available: " +
                                 instances.stream().map(Instance::getId).collect(java.util.stream.Collectors.joining(", "))));
+    }
+
+    /**
+     * Get the HttpHelper for direct API access.
+     * Use this for custom operations not covered by AgentService methods.
+     *
+     * @return HttpHelper instance
+     */
+    public HttpHelper getHttpHelper() {
+        return httpHelper;
     }
 
     // ==================== SHUTDOWN ====================
@@ -2565,5 +2352,87 @@ public class AgentService {
     public void shutdown() {
         logger.info("Shutting down AgentService");
         // Add any cleanup logic here if needed
+    }
+
+    // ==================== RESPONSE WRAPPER CLASSES ====================
+    // These are needed because HttpHelper deserializes directly to POJOs,
+    // and the OpenAI API returns list/page structures that need wrappers.
+
+    /**
+     * Wrapper for thread messages list response.
+     */
+    @Data
+    public static class ThreadMessagesResponse {
+        private List<io.github.sashirestela.openai.domain.assistant.ThreadMessage> data;
+        private String firstId;
+        private String lastId;
+        private boolean hasMore;
+    }
+
+    /**
+     * Extract response from ThreadMessagesResponse.
+     */
+    private String extractResponseFromMessagesResponse(ThreadMessagesResponse messagesResponse) {
+        if (messagesResponse == null || messagesResponse.getData() == null || messagesResponse.getData().isEmpty()) {
+            return "";
+        }
+
+        // Get first message (most recent)
+        var message = messagesResponse.getData().get(0);
+        if (message.getContent() == null || message.getContent().isEmpty()) {
+            return "";
+        }
+
+        // Extract text from content parts
+        StringBuilder sb = new StringBuilder();
+        for (ContentPart part : message.getContent()) {
+            if (part instanceof ContentPartTextAnnotation) {
+                ContentPartTextAnnotation textPart = (ContentPartTextAnnotation) part;
+                if (textPart.getText() != null && textPart.getText().getValue() != null) {
+                    sb.append(textPart.getText().getValue());
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Wrapper for batch list response - extends Page directly.
+     */
+    @Data
+    @lombok.EqualsAndHashCode(callSuper = true)
+    public static class BatchListResponse extends io.github.sashirestela.openai.common.Page<io.github.sashirestela.openai.domain.batch.Batch> {
+    }
+
+    /**
+     * Wrapper for image generation response.
+     */
+    @Data
+    public static class ImageGenerationResponse {
+        private List<Image> data;
+        private long created;
+    }
+
+    /**
+     * Wrapper for embedding response.
+     */
+    @Data
+    public static class EmbeddingResponse {
+        private List<EmbeddingData> data;
+        private String model;
+        private EmbeddingUsage usage;
+
+        @Data
+        public static class EmbeddingData {
+            private int index;
+            private List<Double> embedding;
+            private String object;
+        }
+
+        @Data
+        public static class EmbeddingUsage {
+            private int promptTokens;
+            private int totalTokens;
+        }
     }
 }
