@@ -31,6 +31,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -64,6 +68,12 @@ public class AgentService {
     private final RateLimiter rateLimiter;
     private final Map<String, Agent> agents;
 
+    // Claude/Anthropic virtual thread storage (in-memory conversation history)
+    private final Map<String, List<ClaudeRequest.ClaudeMessage>> claudeThreads;
+
+    // HTTP client for Claude API calls
+    private final HttpClient httpClient;
+
     /**
      * Constructs AgentService with the provided configuration.
      * Initializes OpenAI and Azure clients, loads agent definitions from JSON files.
@@ -92,8 +102,44 @@ public class AgentService {
                     enabledInstances.size(), instanceConfigs.size(), enabledInstances.size());
 
             for (InstanceConfig instanceConfig : enabledInstances) {
+                // Determine provider type
+                Provider providerType;
+                if (instanceConfig.isAzureAnthropic()) {
+                    providerType = Provider.AZURE_ANTHROPIC;
+                } else if (instanceConfig.isAzureOpenAI()) {
+                    providerType = Provider.AZURE_OPENAI;
+                } else {
+                    providerType = Provider.OPENAI;
+                }
+
+                // For Claude/Anthropic instances, we don't create a SimpleOpenAI client
+                // We use direct HTTP calls instead
+                if (providerType == Provider.AZURE_ANTHROPIC) {
+                    // Store raw URL for Anthropic (no /openai normalization)
+                    String baseUrl = instanceConfig.getUrl();
+                    if (baseUrl.endsWith("/")) {
+                        baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+                    }
+
+                    Instance instance = Instance.builder()
+                            .id(instanceConfig.getId())
+                            .baseUrl(baseUrl)
+                            .apiKey(instanceConfig.getKey())
+                            .provider(providerType)
+                            .azureApiVersion(instanceConfig.getApiVersion())
+                            .deployedModels(instanceConfig.getModelsList())
+                            .client(null)  // No SimpleOpenAI client for Anthropic
+                            .build();
+
+                    this.instances.add(instance);
+                    logger.info("Initialized Azure Anthropic instance: {} with models: {}",
+                            instanceConfig.getId(), instanceConfig.getModels());
+                    continue;
+                }
+
+                // For OpenAI/Azure OpenAI instances
                 // Normalize URL (add /openai if Azure and missing)
-                String baseUrl = instanceConfig.isAzure()
+                String baseUrl = instanceConfig.isAzureOpenAI()
                         ? normalizeAzureBaseUrl(instanceConfig.getUrl())
                         : instanceConfig.getUrl();
 
@@ -101,7 +147,7 @@ public class AgentService {
                 SimpleOpenAI client = SimpleOpenAI.builder()
                         .apiKey(instanceConfig.getKey())
                         .baseUrl(baseUrl)
-                        .isAzure(instanceConfig.isAzure())
+                        .isAzure(instanceConfig.isAzureOpenAI())
                         .azureApiVersion(instanceConfig.getApiVersion())
                         .build();
 
@@ -110,7 +156,7 @@ public class AgentService {
                         .id(instanceConfig.getId())
                         .baseUrl(baseUrl)
                         .apiKey(instanceConfig.getKey())
-                        .provider(instanceConfig.isAzure() ? Provider.AZURE : Provider.OPENAI)
+                        .provider(providerType)
                         .azureApiVersion(instanceConfig.getApiVersion())
                         .deployedModels(instanceConfig.getModelsList())
                         .client(client)
@@ -133,6 +179,13 @@ public class AgentService {
                 // Initialize rate limiter
                 this.rateLimiter = new RateLimiter(config.getRequestsPerSecond());
                 logger.info("Initialized rate limiter: {} requests/second", config.getRequestsPerSecond());
+
+                // Initialize Claude virtual threads storage
+                this.claudeThreads = new ConcurrentHashMap<>();
+                this.httpClient = HttpClient.newBuilder()
+                        .connectTimeout(Duration.ofSeconds(30))
+                        .build();
+                logger.info("Initialized Claude virtual thread storage and HTTP client");
 
                 // Load agent definitions if folder path is provided
                 if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
@@ -272,6 +325,13 @@ public class AgentService {
         this.rateLimiter = new RateLimiter(config.getRequestsPerSecond());
         logger.info("Initialized rate limiter: {} requests/second", config.getRequestsPerSecond());
 
+        // Initialize Claude virtual threads storage
+        this.claudeThreads = new ConcurrentHashMap<>();
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(30))
+                .build();
+        logger.info("Initialized Claude virtual thread storage and HTTP client");
+
         // Load agent definitions if folder path is provided
         if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
             loadAgentDefinitions();
@@ -377,8 +437,7 @@ public class AgentService {
      * For Azure, these endpoints require /deployments/{model}/ in the URL path.
      * For OpenAI, returns the standard client.
      *
-     * Azure URL format: https://[host].openai.azure.com/openai/deployments/{model}/[endpoint]
-     * OpenAI URL format: https://api.openai.com/v1/[endpoint] (model in body)
+     * Uses ProviderConfig to determine if model needs to be in path.
      *
      * @param model Model name (used as deployment name for Azure)
      * @param instanceIndex Index of the instance to use
@@ -392,10 +451,10 @@ public class AgentService {
             return instance.getClient();
         }
 
-        // For Azure instances, create a client with deployment URL
-        // Azure chat/image URLs need: https://[baseUrl]/openai/deployments/{model}/[endpoint]
-        String baseUrl = instance.getBaseUrl(); // Already has /openai from normalization
-        String deploymentUrl = baseUrl + "/deployments/" + model;
+        // For Azure instances, build deployment URL using ProviderConfig pattern
+        // We need just the base + /openai/deployments/{model} part (endpoint is added by CleverClient)
+        String baseUrl = normalizeBaseUrl(instance.getBaseUrl());
+        String deploymentUrl = baseUrl + "/openai/deployments/" + model;
 
         logger.debug("Creating Azure chat/image client for model '{}': {} (deployment URL: {})",
                      model, instance.getId(), deploymentUrl);
@@ -406,6 +465,187 @@ public class AgentService {
                 .isAzure(true)
                 .azureApiVersion(instance.getAzureApiVersion())
                 .build();
+    }
+
+    /**
+     * Normalizes base URL by removing trailing slash.
+     */
+    private String normalizeBaseUrl(String baseUrl) {
+        return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+    }
+
+    // ==================== CLAUDE/ANTHROPIC API METHODS ====================
+
+    /**
+     * Calls Claude/Anthropic API directly via HTTP.
+     * Used for Azure Anthropic instances that don't use the OpenAI API format.
+     *
+     * @param instanceIndex Instance index for Azure Anthropic
+     * @param request Claude request object
+     * @return ClaudeResponse from the API
+     * @throws RuntimeException if API call fails
+     */
+    private ClaudeResponse callClaudeAPI(int instanceIndex, ClaudeRequest request) {
+        try {
+            Instance instance = instances.get(instanceIndex);
+
+            // Build URL using ProviderConfig
+            String path = ProviderConfig.getPath(Provider.AZURE_ANTHROPIC, ProviderConfig.Endpoint.CHAT_COMPLETIONS);
+            String url = instance.getBaseUrl() + path;
+
+            // Serialize request to JSON
+            String jsonBody = objectMapper.writeValueAsString(request);
+
+            logger.debug("Calling Claude API: {}", url);
+            logger.debug("Request body: {}", jsonBody);
+
+            // Build HTTP request with Anthropic headers from ProviderConfig
+            Map<String, String> authHeaders = ProviderConfig.getHeaders(
+                    Provider.AZURE_ANTHROPIC,
+                    instance.getApiKey(),
+                    instance.getAzureApiVersion()
+            );
+
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json");
+
+            // Add auth headers from ProviderConfig
+            for (Map.Entry<String, String> header : authHeaders.entrySet()) {
+                requestBuilder.header(header.getKey(), header.getValue());
+            }
+
+            // Add beta header for structured outputs if output_format is present
+            if (request.getOutputFormat() != null) {
+                requestBuilder.header("anthropic-beta", "structured-outputs-2025-11-13");
+                logger.debug("Added structured outputs beta header");
+            }
+
+            HttpRequest httpRequest = requestBuilder
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(Duration.ofSeconds(120))
+                    .build();
+
+            // Send request
+            HttpResponse<String> httpResponse = httpClient.send(
+                    httpRequest,
+                    HttpResponse.BodyHandlers.ofString()
+            );
+
+            logger.debug("Claude API response code: {}", httpResponse.statusCode());
+            logger.debug("Claude API response body: {}", httpResponse.body());
+
+            if (httpResponse.statusCode() != 200) {
+                throw new RuntimeException("Claude API error (HTTP " + httpResponse.statusCode() + "): " +
+                        httpResponse.body());
+            }
+
+            // Parse response
+            return objectMapper.readValue(httpResponse.body(), ClaudeResponse.class);
+
+        } catch (Exception e) {
+            logger.error("Claude API call failed", e);
+            throw new RuntimeException("Claude API call failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Executes a Claude agent request (oneshot - no conversation history).
+     *
+     * @param agent Agent configuration
+     * @param message User message
+     * @param instanceIndex Instance to use
+     * @return Response text
+     */
+    private String executeClaudeRequest(Agent agent, String message, int instanceIndex) {
+        try {
+            // Build Claude request
+            ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
+                    .model(agent.getModel())
+                    .maxTokens(agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096)
+                    .system(agent.getInstructions())
+                    .messages(List.of(
+                            ClaudeRequest.ClaudeMessage.builder()
+                                    .role("user")
+                                    .content(message)
+                                    .build()
+                    ))
+                    .temperature(agent.getTemperature());
+
+            // Add output_format if agent has resultClass (Claude structured outputs)
+            if (agent.getResultClass() != null && !agent.getResultClass().isEmpty() &&
+                    config.getAgentResultClassPackage() != null) {
+                try {
+                    ResponseFormat format = JsonSchemaGenerator.createResponseFormat(
+                            agent.getResultClass(),
+                            config.getAgentResultClassPackage());
+                    requestBuilder.outputFormat(convertToClaudeOutputFormat(format));
+                } catch (Exception e) {
+                    logger.warn("Failed to create JSON schema for Claude: {}", e.getMessage());
+                }
+            }
+
+            ClaudeRequest request = requestBuilder.build();
+
+            // Call Claude API
+            ClaudeResponse response = callClaudeAPI(instanceIndex, request);
+            return response.getTextContent();
+
+        } catch (Exception e) {
+            logger.error("Claude request failed for agent: {}", agent.getId(), e);
+            throw new RuntimeException("Claude request failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Converts OpenAI ResponseFormat to Claude's output_format structure.
+     * Claude uses: {"type": "json_schema", "schema": {...}}
+     * OpenAI uses: {"type": "json_schema", "json_schema": {"schema": JsonNode}}
+     *
+     * @param format OpenAI ResponseFormat
+     * @return Map suitable for Claude API output_format parameter
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> convertToClaudeOutputFormat(ResponseFormat format) {
+        if (format == null || format.getJsonSchema() == null) {
+            return null;
+        }
+
+        try {
+            ResponseFormat.JsonSchema jsonSchema = format.getJsonSchema();
+            com.fasterxml.jackson.databind.JsonNode schemaNode = jsonSchema.getSchema();
+
+            if (schemaNode == null) {
+                logger.warn("No schema found in ResponseFormat for Claude");
+                return null;
+            }
+
+            // Convert JsonNode to Map using ObjectMapper
+            Map<String, Object> schemaMap = objectMapper.convertValue(schemaNode,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+
+            // Claude format: {"type": "json_schema", "schema": {...}}
+            return Map.of(
+                    "type", "json_schema",
+                    "schema", schemaMap
+            );
+        } catch (Exception e) {
+            logger.warn("Failed to convert schema for Claude: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Checks if an instance is a Claude/Anthropic provider.
+     *
+     * @param instanceIndex Instance index
+     * @return true if Azure Anthropic
+     */
+    private boolean isClaudeInstance(int instanceIndex) {
+        if (instanceIndex < 0 || instanceIndex >= instances.size()) {
+            return false;
+        }
+        return instances.get(instanceIndex).getProvider() == Provider.AZURE_ANTHROPIC;
     }
 
     /**
@@ -440,10 +680,11 @@ public class AgentService {
                             .instructions(definition.getInstructions())
                             .resultClass(definition.getResultClass())
                             .temperature(definition.getTemperature())
-                            .threadType(definition.getThreadType())
                             .responseTimeout(definition.getResponseTimeout() != null ?
                                     definition.getResponseTimeout().longValue() : config.getDefaultResponseTimeout())
                             .retrieval(definition.getRetrieval() != null ? definition.getRetrieval() : false)
+                            .isOpenAI(definition.getIsOpenAI() != null ? definition.getIsOpenAI() : true)
+                            .maxTokens(definition.getMaxTokens())
                             .build();
 
                     agents.put(agent.getId(), agent);
@@ -489,6 +730,12 @@ public class AgentService {
         if (agent == null) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Agent not found: " + agentId));
+        }
+
+        // Skip Claude/Anthropic agents - they don't use OpenAI Assistants
+        if (agent.getIsOpenAI() != null && !agent.getIsOpenAI()) {
+            logger.info("⏭️  Skipping agent '{}' (isOpenAI=false, no assistant creation needed)", agent.getName());
+            return CompletableFuture.completedFuture(null);
         }
 
         return CompletableFuture.supplyAsync(() -> {
@@ -765,25 +1012,6 @@ public class AgentService {
     }
 
     /**
-     * Builds Azure URL with model deployment path appended.
-     * Azure OpenAI requires URLs in format: https://instance.openai.azure.com/openai/deployments/{model}
-     *
-     * @param baseUrl Base Azure URL (should already contain /openai from normalization)
-     * @param deploymentName Model deployment name (e.g., "gpt-4o", "gpt-4o-mini")
-     * @return Full Azure URL with deployment path
-     */
-    private String buildAzureUrlWithDeployment(String baseUrl, String deploymentName) {
-        // Remove trailing slash if present
-        String cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-
-        // Add deployment path if not already present
-        if (!cleanBaseUrl.contains("/deployments/")) {
-            return cleanBaseUrl + "/deployments/" + deploymentName;
-        }
-        return cleanBaseUrl;
-    }
-
-    /**
      * Gets or creates an Azure client configured for a specific model deployment.
      * This is necessary because Azure OpenAI requires the model deployment name in the URL.
      *
@@ -800,7 +1028,8 @@ public class AgentService {
         }
 
         // For Azure, build deployment URL with model name
-        String deploymentUrl = buildAzureUrlWithDeployment(instance.getBaseUrl(), model);
+        String baseUrl = normalizeBaseUrl(instance.getBaseUrl());
+        String deploymentUrl = baseUrl + "/openai/deployments/" + model;
 
         // Create Azure client with model-specific deployment URL
         return SimpleOpenAI.builder()
@@ -901,17 +1130,15 @@ public class AgentService {
     /**
      * Sends a request to an agent and waits for completion.
      *
-     * @param agentId          Agent ID
-     * @param userMessage      User message content
-     * @param threadId         Thread ID (null to create new thread)
-     * @param additionalParams Additional parameters for the request
-     * @return CompletableFuture with the agent's response as a string
+     * @param agentId     Agent ID
+     * @param userMessage User message content
+     * @param threadRef   Thread reference (null for oneshot, or from {@link #createThread(String)} for persistent)
+     * @return CompletableFuture with the agent's response as AgentResult
      */
-    public CompletableFuture<String> requestAgent(
+    public CompletableFuture<AgentResult> requestAgent(
             String agentId,
             String userMessage,
-            String threadId,
-            Map<String, Object> additionalParams) {
+            String threadRef) {
 
         Agent agent = agents.get(agentId);
         if (agent == null) {
@@ -919,44 +1146,19 @@ public class AgentService {
                     new IllegalArgumentException("Agent not found: " + agentId));
         }
 
-        return attemptRequest(agent, userMessage, threadId, additionalParams, 0);
-    }
-
-    /**
-     * Sends a message to an agent and returns the typed response object.
-     * Automatically deserializes the JSON response to the agent's configured result class.
-     *
-     * @param agentId          Agent ID
-     * @param userMessage      User message content
-     * @param threadId         Thread ID (null to create new thread)
-     * @param additionalParams Additional parameters for the request
-     * @return CompletableFuture with the agent's response as a typed object
-     */
-    public CompletableFuture<Object> requestAgentTyped(
-            String agentId,
-            String userMessage,
-            String threadId,
-            Map<String, Object> additionalParams) {
-
-        Agent agent = agents.get(agentId);
-        if (agent == null) {
-            return CompletableFuture.failedFuture(
-                    new IllegalArgumentException("Agent not found: " + agentId));
-        }
-
-        // Get JSON response first
-        return requestAgent(agentId, userMessage, threadId, additionalParams)
+        // Get raw response
+        return attemptRequest(agent, userMessage, threadRef, new HashMap<>(), 0)
                 .thenApply(jsonResponse -> {
                     try {
-                        // If no result class configured, return raw JSON string
+                        // If no result class configured, return DefaultResult with raw response
                         if (agent.getResultClass() == null || agent.getResultClass().isEmpty()) {
-                            return jsonResponse;
+                            return new DefaultResult(jsonResponse);
                         }
 
-                        // If no package configured, cannot deserialize
+                        // If no package configured, return DefaultResult
                         if (config.getAgentResultClassPackage() == null || config.getAgentResultClassPackage().isEmpty()) {
-                            logger.warn("Agent {} has resultClass but agentResultClassPackage not configured, returning raw JSON", agentId);
-                            return jsonResponse;
+                            logger.warn("Agent {} has resultClass but agentResultClassPackage not configured, returning DefaultResult", agentId);
+                            return new DefaultResult(jsonResponse);
                         }
 
                         // Build full class name: package + resultClass
@@ -965,7 +1167,7 @@ public class AgentService {
 
                         // Load class dynamically and deserialize
                         Class<?> resultClass = Class.forName(fullClassName);
-                        return objectMapper.readValue(jsonResponse, resultClass);
+                        return (AgentResult) objectMapper.readValue(jsonResponse, resultClass);
 
                     } catch (ClassNotFoundException e) {
                         String fullClassName = config.getAgentResultClassPackage() + "." + agent.getResultClass();
@@ -974,6 +1176,18 @@ public class AgentService {
                         throw new RuntimeException("Failed to deserialize response for agent " + agentId + ": " + e.getMessage(), e);
                     }
                 });
+    }
+
+    /**
+     * Sends a message to an agent (oneshot - creates temporary thread).
+     * Convenience method that calls {@link #requestAgent(String, String, String)} with null threadRef.
+     *
+     * @param agentId     Agent ID
+     * @param userMessage User message content
+     * @return CompletableFuture with the agent's response as AgentResult
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage) {
+        return requestAgent(agentId, userMessage, null);
     }
 
     /**
@@ -1071,6 +1285,7 @@ public class AgentService {
     /**
      * Executes an agent request using model-aware instance selection.
      * Supports persistent threads via encoded thread IDs (format: "instanceIndex_threadId").
+     * Routes to Claude API for Azure Anthropic instances.
      */
     private String executeAgentRequest(
             Agent agent,
@@ -1102,7 +1317,15 @@ public class AgentService {
                     agent.getName(), instanceIdx, agent.getModel());
         }
 
-        SimpleOpenAI client = instances.get(instanceIdx).getClient();
+        Instance instance = instances.get(instanceIdx);
+
+        // Check if Claude/Anthropic instance - use direct API
+        if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+            logger.debug("Routing to Claude API for agent '{}' (model: {})", agent.getName(), agent.getModel());
+            return executeClaudeRequest(agent, userMessage, instanceIdx);
+        }
+
+        SimpleOpenAI client = instance.getClient();
 
         // Get assistant ID for this specific instance
         String assistantId = null;
@@ -1425,15 +1648,33 @@ public class AgentService {
      * Returns an encoded thread ID (format: "instanceIndex_threadId") for persistence.
      * The thread must be explicitly deleted when done using {@link #deleteThread(String)}.
      *
-     * @param model Model name (e.g., "gpt-4o", "gpt-4o-mini")
-     * @return Encoded thread ID (e.g., "3_thread_abc123")
+     * For Claude/Anthropic models, creates a virtual thread (in-memory conversation history).
+     * For OpenAI models, creates a real OpenAI thread.
+     *
+     * @param model Model name (e.g., "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-5")
+     * @return Encoded thread ID (e.g., "3_thread_abc123" or "2_claude_uuid")
      */
     public CompletableFuture<String> createThread(String model) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // Get instance that has this model (model-aware round-robin)
                 int instIndex = getNextInstanceForModel(model);
-                var thread = instances.get(instIndex).getClient().threads().create(ThreadRequest.builder().build()).join();
+                Instance instance = instances.get(instIndex);
+
+                // Check if this is a Claude/Anthropic instance
+                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                    // Create virtual thread (in-memory only)
+                    String threadId = "claude_" + java.util.UUID.randomUUID().toString();
+                    claudeThreads.put(threadId, new ArrayList<>());
+
+                    logger.debug("Created virtual Claude thread {} on instance {} (model: {})",
+                            threadId, instIndex, model);
+
+                    return encodeWithInstance(instIndex, threadId);
+                }
+
+                // OpenAI: create real thread
+                var thread = instance.getClient().threads().create(ThreadRequest.builder().build()).join();
                 String threadId = thread.getId();
 
                 logger.debug("Created thread {} on instance {} (model: {})", threadId, instIndex, model);
@@ -1451,11 +1692,13 @@ public class AgentService {
      * Sends a message to an existing thread WITHOUT deleting it.
      * Use this for multi-turn conversations where you want to maintain context.
      *
+     * For Claude/Anthropic threads, maintains conversation history in-memory.
+     * For OpenAI threads, uses the Assistants API.
+     *
      * @param agentId   Agent ID
      * @param threadRef Thread reference (from {@link #createThread()})
      * @param message   User message
-     * @return CompletableFuture with agent's response and updated thread reference.
-     *         Returns format: {"response": "...", "threadRef": "..."}
+     * @return CompletableFuture with agent's response
      */
     public CompletableFuture<String> sendMessageToThread(String agentId, String threadRef, String message) {
         Agent agent = agents.get(agentId);
@@ -1468,14 +1711,21 @@ public class AgentService {
             try {
                 int instanceIndex = extractInstanceIndex(threadRef);
                 String actualThreadId = extractThreadId(threadRef);
+                Instance instance = instances.get(instanceIndex);
 
+                // Check if this is a Claude/Anthropic virtual thread
+                if (actualThreadId.startsWith("claude_") || instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                    return sendMessageToClaudeThread(agent, actualThreadId, message, instanceIndex);
+                }
+
+                // OpenAI: use Assistants API
                 // Add message to thread
                 var messageRequest = ThreadMessageRequest.builder()
                         .role(ThreadMessageRole.USER)
                         .content(message)
                         .build();
 
-                SimpleOpenAI client = instances.get(instanceIndex).getClient();
+                SimpleOpenAI client = instance.getClient();
                 client.threadMessages().create(actualThreadId, messageRequest).join();
 
                 // Create run - get assistant ID for this instance
@@ -1511,7 +1761,57 @@ public class AgentService {
     }
 
     /**
+     * Sends a message to a Claude virtual thread.
+     * Maintains conversation history in-memory and calls Claude API.
+     *
+     * @param agent Agent configuration
+     * @param threadId Virtual thread ID
+     * @param message User message
+     * @param instanceIndex Instance to use
+     * @return Response text
+     */
+    private String sendMessageToClaudeThread(Agent agent, String threadId, String message, int instanceIndex) {
+        // Get virtual thread history
+        List<ClaudeRequest.ClaudeMessage> history = claudeThreads.get(threadId);
+        if (history == null) {
+            throw new IllegalArgumentException("Claude thread not found: " + threadId);
+        }
+
+        // Add user message to history
+        history.add(ClaudeRequest.ClaudeMessage.builder()
+                .role("user")
+                .content(message)
+                .build());
+
+        // Build Claude request with full history
+        ClaudeRequest request = ClaudeRequest.builder()
+                .model(agent.getModel())
+                .maxTokens(agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096)
+                .system(agent.getInstructions())
+                .messages(new ArrayList<>(history))
+                .temperature(agent.getTemperature())
+                .build();
+
+        // Call Claude API
+        ClaudeResponse response = callClaudeAPI(instanceIndex, request);
+        String responseText = response.getTextContent();
+
+        // Add assistant response to history
+        history.add(ClaudeRequest.ClaudeMessage.builder()
+                .role("assistant")
+                .content(responseText)
+                .build());
+
+        logger.debug("Claude thread {} message exchanged (history: {} messages)",
+                threadId, history.size());
+
+        return responseText;
+    }
+
+    /**
      * Deletes a persistent thread when conversation is complete.
+     * For Claude threads, removes the in-memory conversation history.
+     * For OpenAI threads, deletes the thread via API.
      *
      * @param threadRef Thread reference (from {@link #createThread()})
      * @return CompletableFuture with deletion result
@@ -1522,6 +1822,14 @@ public class AgentService {
                 int instanceIndex = extractInstanceIndex(threadRef);
                 String actualThreadId = extractThreadId(threadRef);
 
+                // Check if Claude virtual thread
+                if (actualThreadId.startsWith("claude_")) {
+                    boolean removed = claudeThreads.remove(actualThreadId) != null;
+                    logger.debug("Deleted virtual Claude thread: {} (success: {})", actualThreadId, removed);
+                    return removed;
+                }
+
+                // OpenAI: delete via API
                 instances.get(instanceIndex).getClient().threads().delete(actualThreadId).join();
                 logger.debug("Deleted thread {} from instance {}", actualThreadId, instanceIndex);
                 return true;
@@ -1615,8 +1923,9 @@ public class AgentService {
     /**
      * Sends a chat completion request (non-Assistant API).
      * Automatically routes to the correct instance based on the model.
+     * Supports both OpenAI and Claude/Anthropic models.
      *
-     * @param model       Model name (e.g., "gpt-4o", "gpt-4o-mini")
+     * @param model       Model name (e.g., "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-5")
      * @param messages    List of chat messages
      * @param temperature Temperature (optional, can be null)
      * @return CompletableFuture with response content
@@ -1628,6 +1937,16 @@ public class AgentService {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
+                // Get instance that has this model deployed
+                int instanceIdx = getNextInstanceForModel(model);
+                Instance instance = instances.get(instanceIdx);
+
+                // Check if Claude/Anthropic instance
+                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                    return executeChatCompletionClaude(model, messages, temperature, instanceIdx);
+                }
+
+                // OpenAI: use standard chat completions API
                 ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
                         .model(model)
                         .messages(messages);
@@ -1638,8 +1957,6 @@ public class AgentService {
 
                 ChatRequest request = requestBuilder.build();
 
-                // Get instance that has this model deployed
-                int instanceIdx = getNextInstanceForModel(model);
                 SimpleOpenAI client = getClientForChatOrImage(model, instanceIdx);
                 Chat chatResponse = client.chatCompletions().create(request).join();
 
@@ -1668,6 +1985,51 @@ public class AgentService {
                 throw new RuntimeException("Chat completion request failed", e);
             }
         });
+    }
+
+    /**
+     * Executes a chat completion request for Claude/Anthropic models.
+     *
+     * @param model Model name (e.g., "claude-sonnet-4-5")
+     * @param messages List of chat messages (OpenAI format)
+     * @param temperature Temperature
+     * @param instanceIndex Instance to use
+     * @return Response text
+     */
+    private String executeChatCompletionClaude(String model, List<ChatMessage> messages,
+                                                Double temperature, int instanceIndex) {
+        // Extract system prompt (first SystemMessage if exists)
+        String systemPrompt = null;
+        List<ClaudeRequest.ClaudeMessage> claudeMessages = new ArrayList<>();
+
+        for (ChatMessage msg : messages) {
+            if (msg instanceof ChatMessage.SystemMessage && systemPrompt == null) {
+                systemPrompt = ((ChatMessage.SystemMessage) msg).getContent().toString();
+            } else if (msg instanceof ChatMessage.UserMessage) {
+                Object content = ((ChatMessage.UserMessage) msg).getContent();
+                claudeMessages.add(ClaudeRequest.ClaudeMessage.builder()
+                        .role("user")
+                        .content(content != null ? content.toString() : "")
+                        .build());
+            } else if (msg instanceof ChatMessage.AssistantMessage) {
+                Object content = ((ChatMessage.AssistantMessage) msg).getContent();
+                claudeMessages.add(ClaudeRequest.ClaudeMessage.builder()
+                        .role("assistant")
+                        .content(content != null ? content.toString() : "")
+                        .build());
+            }
+        }
+
+        ClaudeRequest request = ClaudeRequest.builder()
+                .model(model)
+                .maxTokens(4096)
+                .system(systemPrompt)
+                .messages(claudeMessages)
+                .temperature(temperature)
+                .build();
+
+        ClaudeResponse response = callClaudeAPI(instanceIndex, request);
+        return response.getTextContent();
     }
 
     /**
@@ -2116,7 +2478,13 @@ public class AgentService {
                                 .build();
 
                 // Call embeddings API
-                var response = selectedInstance.getClient().embeddings().create(request).join();
+                // For Azure, we need to use deployment-specific client (like chat/images)
+                int instanceIndex = instances.indexOf(selectedInstance);
+                logger.debug("Creating embedding client for instance {} ({}), provider: {}",
+                        instanceIndex, selectedInstance.getId(), selectedInstance.getProvider());
+                SimpleOpenAI embeddingClient = getClientForChatOrImage(model, instanceIndex);
+                logger.debug("Calling embeddings API with model: {}", model);
+                var response = embeddingClient.embeddings().create(request).join();
 
                 if (response != null && response.getData() != null && !response.getData().isEmpty()) {
                     // Extract embedding vector

@@ -12,7 +12,20 @@ public enum Provider {
 
     /**
      * Azure OpenAI Service (*.openai.azure.com)
-     * Models vary by deployment - can have chat models, vision models, or both
+     * OpenAI models deployed on Azure: GPT-4, GPT-3.5, DALL-E, embeddings
      */
+    AZURE_OPENAI,
+
+    /**
+     * Azure Anthropic Service (*.services.ai.azure.com)
+     * Claude models deployed on Azure: Claude Sonnet, Claude Haiku
+     */
+    AZURE_ANTHROPIC,
+
+    /**
+     * Legacy: Alias for AZURE_OPENAI (backward compatibility)
+     * Use AZURE_OPENAI or AZURE_ANTHROPIC instead
+     */
+    @Deprecated
     AZURE
 }

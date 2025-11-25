@@ -116,6 +116,9 @@ public class JsonSchemaGenerator {
                         additionalProps.put("type", "string");
                     } else if (valueType == Integer.class || valueType == int.class) {
                         additionalProps.put("type", "integer");
+                    } else if (valueType == Double.class || valueType == double.class ||
+                               valueType == Float.class || valueType == float.class) {
+                        additionalProps.put("type", "number");
                     } else if (valueType == Boolean.class || valueType == boolean.class) {
                         additionalProps.put("type", "boolean");
                     } else {

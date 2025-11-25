@@ -22,12 +22,13 @@ class AgentTest {
                 .temperature(0.7)
                 .retrieval(true)
                 .responseTimeout(60000L)
-                .threadType("THREAD_UNIQUE_PER_USERID")
                 .agentType("CHAT")
                 .assistantIds(List.of("asst_openai_123", "asst_azure_1", "asst_azure_2"))
                 .status("active")
                 .threadId("thread_456")
                 .createOnAppStart(true)
+                .isOpenAI(true)
+                .maxTokens(4096)
                 .build();
 
         assertEquals("101", agent.getId());
@@ -38,12 +39,13 @@ class AgentTest {
         assertEquals(0.7, agent.getTemperature());
         assertTrue(agent.getRetrieval());
         assertEquals(60000L, agent.getResponseTimeout());
-        assertEquals("THREAD_UNIQUE_PER_USERID", agent.getThreadType());
         assertEquals("CHAT", agent.getAgentType());
         assertEquals(List.of("asst_openai_123", "asst_azure_1", "asst_azure_2"), agent.getAssistantIds());
         assertEquals("active", agent.getStatus());
         assertEquals("thread_456", agent.getThreadId());
         assertTrue(agent.getCreateOnAppStart());
+        assertTrue(agent.getIsOpenAI());
+        assertEquals(4096, agent.getMaxTokens());
     }
 
     @Test
@@ -57,7 +59,7 @@ class AgentTest {
     @Test
     void testAgentAllArgsConstructor() {
         // Order: id, name, assistantIds, model, instructions, resultClass, temperature,
-        //        threadType, status, threadId, responseTimeout, retrieval, agentType, createOnAppStart
+        //        status, threadId, responseTimeout, retrieval, agentType, createOnAppStart, isOpenAI, maxTokens
         var agent = new Agent(
                 "101",                                  // id
                 "Test Agent",                           // name
@@ -66,17 +68,20 @@ class AgentTest {
                 "Test instructions",                    // instructions
                 "com.example.TestResult",               // resultClass
                 0.7,                                    // temperature
-                "THREAD_UNIQUE_PER_USERID",             // threadType
                 "active",                               // status
                 "thread_456",                           // threadId
                 60000L,                                 // responseTimeout
                 true,                                   // retrieval
                 "CHAT",                                 // agentType
-                true                                    // createOnAppStart
+                true,                                   // createOnAppStart
+                true,                                   // isOpenAI
+                4096                                    // maxTokens
         );
 
         assertEquals("101", agent.getId());
         assertEquals("Test Agent", agent.getName());
+        assertEquals(true, agent.getIsOpenAI());
+        assertEquals(4096, agent.getMaxTokens());
     }
 
     @Test
@@ -91,12 +96,13 @@ class AgentTest {
         agent.setTemperature(0.5);
         agent.setRetrieval(false);
         agent.setResponseTimeout(30000L);
-        agent.setThreadType("THREAD_UNIQUE_PER_CONVERSATIONID");
         agent.setAgentType("TASK");
         agent.setAssistantIds(List.of("asst_openai_456", "asst_azure_3"));
         agent.setStatus("inactive");
         agent.setThreadId("thread_789");
         agent.setCreateOnAppStart(true);
+        agent.setIsOpenAI(false);
+        agent.setMaxTokens(8192);
 
         assertEquals("202", agent.getId());
         assertEquals("Updated Agent", agent.getName());
@@ -106,12 +112,13 @@ class AgentTest {
         assertEquals(0.5, agent.getTemperature());
         assertFalse(agent.getRetrieval());
         assertEquals(30000L, agent.getResponseTimeout());
-        assertEquals("THREAD_UNIQUE_PER_CONVERSATIONID", agent.getThreadType());
         assertEquals("TASK", agent.getAgentType());
         assertEquals(List.of("asst_openai_456", "asst_azure_3"), agent.getAssistantIds());
         assertEquals("inactive", agent.getStatus());
         assertEquals("thread_789", agent.getThreadId());
         assertTrue(agent.getCreateOnAppStart());
+        assertFalse(agent.getIsOpenAI());
+        assertEquals(8192, agent.getMaxTokens());
     }
 
     @Test

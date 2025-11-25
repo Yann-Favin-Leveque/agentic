@@ -114,15 +114,31 @@ public class InstanceConfig {
     }
 
     /**
-     * Check if this is an Azure instance.
-     * @return true if provider is "azure"
+     * Check if this is an Azure OpenAI instance.
+     * @return true if provider is "azure", "azure-openai"
      */
-    public boolean isAzure() {
-        return "azure".equalsIgnoreCase(provider);
+    public boolean isAzureOpenAI() {
+        return "azure".equalsIgnoreCase(provider) || "azure-openai".equalsIgnoreCase(provider);
     }
 
     /**
-     * Check if this is an OpenAI instance.
+     * Check if this is an Azure Anthropic instance.
+     * @return true if provider is "azure-anthropic"
+     */
+    public boolean isAzureAnthropic() {
+        return "azure-anthropic".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is any Azure instance (OpenAI or Anthropic).
+     * @return true if provider contains "azure"
+     */
+    public boolean isAzure() {
+        return isAzureOpenAI() || isAzureAnthropic();
+    }
+
+    /**
+     * Check if this is a standard OpenAI instance.
      * @return true if provider is "openai"
      */
     public boolean isOpenAI() {

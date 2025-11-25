@@ -6,7 +6,7 @@
 
     <groupId>io.github.Yann-Favin-Leveque</groupId>
     <artifactId>simple-openai</artifactId>
-    <version>3.32.1</version>
+    <version>3.33.0</version>
   <packaging>jar</packaging>
 
   <name>simple-openai</name>

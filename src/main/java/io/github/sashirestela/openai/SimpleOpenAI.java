@@ -162,8 +162,11 @@ public class SimpleOpenAI extends BaseSimpleOpenAI {
         // Remove version path (e.g., /v1) - Azure baseUrls already contain /openai
         url = url.replaceFirst(VERSION_REGEX, "");
 
-        // Keep deployment in URL for /chat/completions and /images/generations calls
-        if (!url.contains(CHAT_COMPLETIONS_LITERAL) && !url.contains(IMAGES_GENERATIONS_LITERAL)) {
+        // Keep deployment in URL for /chat/completions, /images/generations, and /embeddings calls
+        final String EMBEDDINGS_LITERAL = "/embeddings";
+        if (!url.contains(CHAT_COMPLETIONS_LITERAL) &&
+            !url.contains(IMAGES_GENERATIONS_LITERAL) &&
+            !url.contains(EMBEDDINGS_LITERAL)) {
             url = url.replaceFirst(DEPLOYMENT_REGEX, "/");
         }
 

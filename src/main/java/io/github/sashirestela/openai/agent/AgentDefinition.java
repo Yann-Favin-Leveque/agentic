@@ -92,13 +92,6 @@ public class AgentDefinition {
     private Integer responseTimeout;
 
     /**
-     * Thread management type.
-     */
-    @JsonAlias("thread_type")
-    @JsonProperty("threadType")
-    private String threadType;
-
-    /**
      * Agent type for categorization.
      */
     @JsonProperty("agentType")
@@ -118,5 +111,21 @@ public class AgentDefinition {
      */
     @JsonProperty("assistantIds")
     private List<String> assistantIds;
+
+    /**
+     * Whether this agent uses OpenAI Assistants API.
+     * - true: Uses OpenAI Assistants (requires assistant creation)
+     * - false: Direct API calls (e.g., Claude/Anthropic - no assistant)
+     * Default: true (backward compatibility)
+     */
+    @JsonProperty("isOpenAI")
+    private Boolean isOpenAI;
+
+    /**
+     * Maximum tokens for response generation.
+     * Used primarily for Anthropic/Claude models.
+     */
+    @JsonProperty("maxTokens")
+    private Integer maxTokens;
 
 }

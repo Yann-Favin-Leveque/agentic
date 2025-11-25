@@ -67,11 +67,6 @@ public class Agent {
     private Double temperature;
 
     /**
-     * Thread management type (e.g., "SINGLE", "MULTI").
-     */
-    private String threadType;
-
-    /**
      * Current agent status (e.g., "OK", "ERROR").
      */
     private String status;
@@ -104,5 +99,21 @@ public class Agent {
      */
     @Builder.Default
     private Boolean createOnAppStart = false;
+
+    /**
+     * Whether this agent uses OpenAI Assistants API.
+     * - true: Uses OpenAI Assistants (requires assistant creation)
+     * - false: Direct API calls (e.g., Claude/Anthropic - no assistant)
+     * Default: true (backward compatibility)
+     */
+    @Builder.Default
+    private Boolean isOpenAI = true;
+
+    /**
+     * Maximum tokens for response generation.
+     * Used primarily for Anthropic/Claude models.
+     * For OpenAI, this is typically controlled by the model's context window.
+     */
+    private Integer maxTokens;
 
 }
