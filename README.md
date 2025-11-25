@@ -1,13 +1,12 @@
 # Agentic-Helper
 
-A Java library for multi-provider AI orchestration (OpenAI, Azure OpenAI, Azure Anthropic).
+A Java library for multi-provider AI orchestration (OpenAI, Azure OpenAI, Azure Anthropic/Claude).
 
 High-level `AgentService` with rate limiting, retries, and structured outputs.
 
 ## Credits
 
 This project was originally forked from [simple-openai](https://github.com/sashirestela/simple-openai) by [Sashir Estela](https://github.com/sashirestela).
-The low-level OpenAI client code (`SimpleOpenAI`, domain classes, etc.) comes from that excellent library.
 
 **Agentic-Helper** adds:
 - `AgentService` for high-level agent orchestration
@@ -16,6 +15,7 @@ The low-level OpenAI client code (`SimpleOpenAI`, domain classes, etc.) comes fr
 - Automatic rate limiting and retries
 - Structured outputs with typed results
 - Vector store RAG integration
+- Image generation support
 
 ## Table of Contents
 - [Installation](#installation)
@@ -23,15 +23,26 @@ The low-level OpenAI client code (`SimpleOpenAI`, domain classes, etc.) comes fr
 - [Configuration](#configuration)
 - [Features](#features)
   - [Multi-Provider Support](#multi-provider-support)
-  - [Structured Outputs](#structured-outputs)
   - [Chat Completion](#chat-completion)
+  - [Structured Outputs](#structured-outputs)
+  - [Agent-based Requests](#agent-based-requests)
   - [Vector Store RAG](#vector-store-rag)
+  - [Image Generation](#image-generation)
 - [Environment Variables](#environment-variables)
 - [License](#license)
 
 ## Installation
 
-Add the dependency to your Maven project:
+### Option 1: Local Install (Recommended for development)
+
+```bash
+# Clone and install locally
+git clone https://github.com/Yann-Favin-Leveque/agentic-helper.git
+cd agentic-helper
+mvn clean install -DskipTests
+```
+
+Then add to your project's `pom.xml`:
 
 ```xml
 <dependency>
@@ -41,26 +52,37 @@ Add the dependency to your Maven project:
 </dependency>
 ```
 
-Or using Gradle:
+### Option 2: GitHub Packages
 
-```groovy
-dependencies {
-    implementation 'io.github.Yann-Favin-Leveque:agentic-helper:1.0.0'
-}
+Add the repository to your `pom.xml`:
+
+```xml
+<repositories>
+    <repository>
+        <id>github</id>
+        <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic-helper</url>
+    </repository>
+</repositories>
+
+<dependency>
+    <groupId>io.github.Yann-Favin-Leveque</groupId>
+    <artifactId>agentic-helper</artifactId>
+    <version>1.0.0</version>
+</dependency>
 ```
 
 ## Quick Start
 
 ```java
 import io.github.sashirestela.openai.agent.*;
+import io.github.sashirestela.openai.domain.chat.ChatMessage;
 
-// 1. Configure instances via JSON (from environment variable)
+// 1. Configure instances via JSON
 String instancesJson = System.getenv("OPENAI_INSTANCES");
 
 AgentServiceConfig config = AgentServiceConfig.fromJson(instancesJson)
     .agentResultClassPackage("com.example.results")
     .requestsPerSecond(5)
-    .maxRetries(3)
     .build();
 
 // 2. Create the service
@@ -68,8 +90,8 @@ AgentService service = new AgentService(config);
 
 // 3. Use chat completion
 List<ChatMessage> messages = List.of(
-    SystemMessage.of("You are a helpful assistant."),
-    UserMessage.of("What is the capital of France?")
+    ChatMessage.SystemMessage.of("You are a helpful assistant."),
+    ChatMessage.UserMessage.of("What is the capital of France?")
 );
 
 DefaultResult result = service.chatCompletion("gpt-4o", messages, 0.7).join();
@@ -128,19 +150,57 @@ AgentServiceConfig config = AgentServiceConfig.fromJson(instancesJson)
     .build();
 ```
 
+### Spring Boot Integration
+
+```java
+@Configuration
+public class AgentServiceConfiguration {
+
+    @Value("${openai.instances}")
+    private String instancesJson;
+
+    @Bean
+    public AgentService agentService() {
+        AgentServiceConfig config = AgentServiceConfig.fromJson(instancesJson)
+            .agentResultClassPackage("com.example.results")
+            .agentJsonFolderPath("src/main/resources/agents")
+            .requestsPerSecond(15)
+            .build();
+
+        return new AgentService(config);
+    }
+}
+```
+
 ## Features
 
 ### Multi-Provider Support
 
 AgentService supports three providers:
 
-| Provider | Description | Authentication |
-|----------|-------------|----------------|
-| `openai` | OpenAI API | Bearer token |
-| `azure` | Azure OpenAI | api-key header |
-| `azure-anthropic` | Azure AI (Claude) | x-api-key + anthropic-version |
+| Provider | Description | Authentication | Models |
+|----------|-------------|----------------|--------|
+| `openai` | OpenAI API | Bearer token | gpt-4o, gpt-4o-mini, etc. |
+| `azure` | Azure OpenAI | api-key header | gpt-4o (deployed) |
+| `azure-anthropic` | Azure AI (Claude) | x-api-key + anthropic-version | claude-sonnet-4-5, etc. |
 
 The service automatically detects the model family (OpenAI vs Anthropic) based on model name and uses the appropriate API format.
+
+### Chat Completion
+
+Simple stateless chat completions:
+
+```java
+// Simple (returns DefaultResult)
+DefaultResult result = service.chatCompletion("gpt-4o", messages, 0.7).join();
+String text = result.getResult();
+
+// Typed with Class (compile-time type safety)
+WeatherResult result = service.chatCompletion("gpt-4o", messages, 0.7, WeatherResult.class).join();
+
+// Typed with String class name (runtime resolution from agentResultClassPackage)
+AgentResult result = service.chatCompletion("gpt-4o", messages, 0.7, "WeatherResult").join();
+```
 
 ### Structured Outputs
 
@@ -168,17 +228,37 @@ System.out.println(result.temperature);  // Type-safe access
 
 Works with both OpenAI (`response_format`) and Claude (`output_format`)!
 
-### Chat Completion
+### Agent-based Requests
 
-Simple stateless chat completions:
+Define agents in JSON files and use them for complex interactions:
 
+**Agent JSON file** (`src/main/resources/agents/weather-agent.json`):
+```json
+{
+  "id": "weather-agent",
+  "name": "Weather Assistant",
+  "model": "gpt-4o",
+  "instructions": "You are a weather expert. Provide accurate weather information.",
+  "temperature": 0.7,
+  "resultClass": "WeatherResult",
+  "retrieval": false
+}
+```
+
+**Usage:**
 ```java
-// Simple (returns DefaultResult)
-DefaultResult result = service.chatCompletion("gpt-4o", messages, 0.7).join();
-String text = result.getResult();
+// Simple request
+String response = service.requestAgent("weather-agent", "What's the weather in Paris?").join();
 
-// Typed (returns your custom class)
-MyResult result = service.chatCompletion("gpt-4o", messages, 0.7, MyResult.class).join();
+// With conversation history
+String response = service.requestAgent("weather-agent", "What about tomorrow?", threadRef).join();
+
+// With vector store (RAG)
+String response = service.requestAgentWithVectorStorage(
+    "research-agent",
+    "Summarize the key findings",
+    vectorStoreRef
+).join();
 ```
 
 ### Vector Store RAG
@@ -201,14 +281,38 @@ String response = service.requestAgentWithVectorStorage(
 
 // 4. Clean up
 service.deleteVectorStore(vectorStoreRef);
+service.deleteFile(fileRef);
+```
+
+### Image Generation
+
+Generate images using DALL-E:
+
+```java
+// Generate image and get URL
+String imageUrl = service.generateImage(
+    "A beautiful sunset over mountains",
+    "dall-e-3",
+    Size.X1024,
+    Quality.HD
+).join();
+
+// Generate and save to file
+Path imagePath = service.generateImageToFile(
+    "A futuristic city",
+    "dall-e-3",
+    Size.X1024,
+    Quality.STANDARD,
+    Paths.get("output.png")
+).join();
 ```
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_INSTANCES` | JSON array of instance configurations |
-| `ENABLED_PROVIDERS` | Optional: Comma-separated list of providers to enable (e.g., `openai,azure`) |
+| `OPENAI_INSTANCES` | JSON array of instance configurations (required) |
+| `ENABLED_PROVIDERS` | Optional: Comma-separated list of providers to enable |
 
 ### Provider Filtering
 
@@ -224,6 +328,25 @@ export ENABLED_PROVIDERS=azure,azure-anthropic
 # Use all providers (default)
 unset ENABLED_PROVIDERS
 ```
+
+## API Reference
+
+### AgentService Methods
+
+| Method | Description |
+|--------|-------------|
+| `chatCompletion(model, messages, temp)` | Simple chat completion |
+| `chatCompletion(model, messages, temp, Class)` | Typed chat completion |
+| `chatCompletion(model, messages, temp, String)` | Typed chat completion (class name) |
+| `requestAgent(agentId, prompt)` | Request using agent definition |
+| `requestAgent(agentId, prompt, threadRef)` | Request with conversation history |
+| `requestAgentWithVectorStorage(agentId, prompt, vectorStoreRef)` | Request with RAG |
+| `uploadFileForAssistants(path)` | Upload file for assistants |
+| `createVectorStore(name, fileRefs)` | Create vector store |
+| `deleteVectorStore(ref)` | Delete vector store |
+| `deleteFile(ref)` | Delete uploaded file |
+| `generateImage(prompt, model, size, quality)` | Generate image |
+| `generateImageToFile(prompt, model, size, quality, path)` | Generate and save image |
 
 ## License
 
