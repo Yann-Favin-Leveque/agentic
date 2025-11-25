@@ -2120,6 +2120,38 @@ public class AgentService {
         return chatCompletion(model, messages, temperature, DefaultResult.class);
     }
 
+    /**
+     * Executes a stateless chat completion with structured output by class name.
+     * Resolves the class from agentResultClassPackage + resultClassName.
+     *
+     * @param model           Model name (e.g., "gpt-4o", "claude-sonnet-4-5")
+     * @param messages        List of chat messages
+     * @param temperature     Temperature for response generation
+     * @param resultClassName Simple class name (e.g., "WeatherResult")
+     * @return CompletableFuture with typed result
+     */
+    @SuppressWarnings("unchecked")
+    public <T extends AgentResult> CompletableFuture<T> chatCompletion(
+            String model,
+            List<ChatMessage> messages,
+            Double temperature,
+            String resultClassName) {
+
+        if (config.getAgentResultClassPackage() == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("agentResultClassPackage not configured"));
+        }
+
+        try {
+            String fullClassName = config.getAgentResultClassPackage() + "." + resultClassName;
+            Class<T> resultClass = (Class<T>) Class.forName(fullClassName);
+            return chatCompletion(model, messages, temperature, resultClass);
+        } catch (ClassNotFoundException e) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("Result class not found: " + resultClassName, e));
+        }
+    }
+
 
     /**
      * Maps a JSON response to a typed agent result.
