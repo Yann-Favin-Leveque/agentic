@@ -459,6 +459,9 @@ public class AgentService {
      * Claude uses: {"type": "json_schema", "schema": {...}}
      * OpenAI uses: {"type": "json_schema", "json_schema": {"schema": JsonNode}}
      *
+     * Also fixes Map fields: Claude doesn't support additionalProperties with object value,
+     * so Maps are converted to string type (JSON serialized).
+     *
      * @param format OpenAI ResponseFormat
      * @return Map suitable for Claude API output_format parameter
      */
@@ -481,6 +484,9 @@ public class AgentService {
             Map<String, Object> schemaMap = objectMapper.convertValue(schemaNode,
                     new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
 
+            // Fix Map fields for Claude compatibility
+            fixSchemaForClaude(schemaMap);
+
             // Claude format: {"type": "json_schema", "schema": {...}}
             return Map.of(
                     "type", "json_schema",
@@ -489,6 +495,47 @@ public class AgentService {
         } catch (Exception e) {
             logger.warn("Failed to convert schema for Claude: {}", e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Recursively fixes schema for Claude compatibility.
+     * Claude doesn't support additionalProperties with object value (like {type: "number"}).
+     * Maps are converted to string type (will contain JSON).
+     */
+    @SuppressWarnings("unchecked")
+    private void fixSchemaForClaude(Map<String, Object> schema) {
+        if (schema == null) return;
+
+        // Check if this is a Map field (has additionalProperties with object value)
+        Object additionalProps = schema.get("additionalProperties");
+        if (additionalProps instanceof Map) {
+            // This is a Map field - convert to string for Claude
+            schema.put("type", "string");
+            schema.put("additionalProperties", false);
+            String desc = (String) schema.get("description");
+            if (desc != null) {
+                schema.put("description", desc + " (JSON object as string)");
+            }
+            logger.debug("Converted Map field to string for Claude compatibility");
+            return;
+        }
+
+        // Recursively process properties
+        Object properties = schema.get("properties");
+        if (properties instanceof Map) {
+            Map<String, Object> propsMap = (Map<String, Object>) properties;
+            for (Object value : propsMap.values()) {
+                if (value instanceof Map) {
+                    fixSchemaForClaude((Map<String, Object>) value);
+                }
+            }
+        }
+
+        // Recursively process array items
+        Object items = schema.get("items");
+        if (items instanceof Map) {
+            fixSchemaForClaude((Map<String, Object>) items);
         }
     }
 

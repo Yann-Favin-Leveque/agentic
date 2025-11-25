@@ -16,11 +16,21 @@ import java.util.Set;
 
 /**
  * Generates JSON Schema from Java classes for OpenAI structured outputs.
+ * Supports both OpenAI and Claude (Anthropic) formats.
  */
 public class JsonSchemaGenerator {
 
     private static final Logger logger = LoggerFactory.getLogger(JsonSchemaGenerator.class);
     private static final ObjectMapper mapper = new ObjectMapper();
+
+    /**
+     * Schema mode for different providers.
+     * Claude has stricter requirements (no additionalProperties with object value).
+     */
+    public enum SchemaMode {
+        OPENAI,  // Supports Map with additionalProperties: {type: "..."}
+        CLAUDE   // Requires additionalProperties: false, Maps become JSON strings
+    }
 
     /**
      * Creates a ResponseFormat with JSON Schema from a result class name.
