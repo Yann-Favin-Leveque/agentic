@@ -15,7 +15,7 @@ import java.io.IOException;
  * - Set environment variable OPENAI_INSTANCES with JSON configuration
  * - Optional: Set ENABLED_PROVIDERS to filter providers
  */
-public class AgentServiceDemo extends AbstractDemo {
+public class AgentServiceDemo {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentServiceDemo.class);
 
