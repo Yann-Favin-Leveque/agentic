@@ -32,19 +32,34 @@ public class JsonSchemaGenerator {
     public static ResponseFormat createResponseFormat(String resultClassName, String packageName) {
         try {
             Class<?> clazz = Class.forName(packageName + "." + resultClassName);
+            return createResponseFormatFromClass(clazz);
+        } catch (ClassNotFoundException e) {
+            logger.warn("Failed to find class: {}.{}", packageName, resultClassName, e);
+            return ResponseFormat.JSON_OBJECT;
+        }
+    }
+
+    /**
+     * Creates a ResponseFormat with JSON Schema from a Class object.
+     *
+     * @param clazz The class to generate schema for
+     * @return ResponseFormat with JSON Schema or fallback format
+     */
+    public static ResponseFormat createResponseFormatFromClass(Class<?> clazz) {
+        try {
             ObjectNode schema = buildSchemaForClass(clazz, new HashSet<>());
 
             ResponseFormat.JsonSchema jsonSchema = ResponseFormat.JsonSchema.builder()
-                    .name(resultClassName.toLowerCase() + "_format")
+                    .name(clazz.getSimpleName().toLowerCase() + "_format")
                     .schema(schema)
                     .strict(true)
                     .build();
 
-            logger.debug("Successfully created JSON Schema for class: {}", resultClassName);
+            logger.debug("Successfully created JSON Schema for class: {}", clazz.getSimpleName());
             return ResponseFormat.jsonSchema(jsonSchema);
 
         } catch (Exception e) {
-            logger.warn("Failed to create JSON Schema for class: {}", resultClassName, e);
+            logger.warn("Failed to create JSON Schema for class: {}", clazz.getSimpleName(), e);
             return ResponseFormat.JSON_OBJECT;
         }
     }

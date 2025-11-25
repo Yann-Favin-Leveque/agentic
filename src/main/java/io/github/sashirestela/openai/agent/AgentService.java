@@ -1979,55 +1979,72 @@ public class AgentService {
     }
 
     /**
-     * Sends a structured chat completion request with JSON Schema.
+     * Sends a chat completion request with structured output (JSON Schema).
      * Automatically routes to the correct instance based on the model.
+     * Supports both OpenAI (response_format) and Claude/Anthropic (output_format).
+     * If no resultClass is provided, returns DefaultResult with the raw response.
      *
-     * @param model         Model name (e.g., "gpt-4o")
+     * @param <T>           Result type extending AgentResult
+     * @param model         Model name (e.g., "gpt-4o", "claude-sonnet-4-5")
      * @param messages      List of chat messages
      * @param temperature   Temperature (optional, can be null)
-     * @param resultClass   Result class name for schema generation
-     * @return CompletableFuture with response content
+     * @param resultClass   Result class for typed response (null = DefaultResult)
+     * @return CompletableFuture with typed AgentResult
      */
-    public CompletableFuture<String> requestStructuredChatCompletion(
+    @SuppressWarnings("unchecked")
+    public <T extends AgentResult> CompletableFuture<T> chatCompletion(
             String model,
             List<ChatMessage> messages,
             Double temperature,
-            String resultClass) {
+            Class<T> resultClass) {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
-                ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
-                        .model(model)
-                        .messages(messages);
-
-                if (temperature != null) {
-                    requestBuilder.temperature(temperature);
-                }
-
-                // Add response format if result class is specified
-                if (resultClass != null && !resultClass.isEmpty() &&
-                        config.getAgentResultClassPackage() != null) {
-                    ResponseFormat format = JsonSchemaGenerator.createResponseFormat(
-                            resultClass,
-                            config.getAgentResultClassPackage());
-                    requestBuilder.responseFormat(format);
-                }
-
-                ChatRequest request = requestBuilder.build();
-
                 // Get instance that has this model deployed
                 int instanceIdx = getNextInstanceForModel(model);
                 Instance instance = instances.get(instanceIdx);
 
-                // POST to /chat/completions with model in path for Azure
-                Chat chatResponse = httpHelper.post(instance, ProviderConfig.Endpoint.CHAT_COMPLETIONS,
-                        model, request, Chat.class).join();
+                String jsonResponse;
 
-                if (chatResponse.getChoices() == null || chatResponse.getChoices().isEmpty()) {
-                    throw new RuntimeException("No choices returned in structured chat completion");
+                // Check if Claude/Anthropic instance
+                if (instance.getProvider() == Provider.AZURE_ANTHROPIC) {
+                    jsonResponse = executeChatCompletionClaudeStructured(model, messages, temperature, instanceIdx, resultClass);
+                } else {
+                    // OpenAI path
+                    ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
+                            .model(model)
+                            .messages(messages);
+
+                    if (temperature != null) {
+                        requestBuilder.temperature(temperature);
+                    }
+
+                    // Add response_format if result class is specified (not DefaultResult)
+                    if (resultClass != null && resultClass != DefaultResult.class) {
+                        ResponseFormat format = JsonSchemaGenerator.createResponseFormatFromClass(resultClass);
+                        requestBuilder.responseFormat(format);
+                    }
+
+                    ChatRequest request = requestBuilder.build();
+
+                    // POST to /chat/completions with model in path for Azure
+                    Chat chatResponse = httpHelper.post(instance, ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                            model, request, Chat.class).join();
+
+                    if (chatResponse.getChoices() == null || chatResponse.getChoices().isEmpty()) {
+                        throw new RuntimeException("No choices returned in chat completion");
+                    }
+
+                    jsonResponse = chatResponse.getChoices().get(0).getMessage().getContent();
                 }
 
-                return chatResponse.getChoices().get(0).getMessage().getContent();
+                // If no result class or DefaultResult, return DefaultResult with raw response
+                if (resultClass == null || resultClass == DefaultResult.class) {
+                    return (T) new DefaultResult(jsonResponse);
+                }
+
+                // Deserialize to typed result
+                return objectMapper.readValue(jsonResponse, resultClass);
 
             } catch (Exception e) {
                 String errorMessage = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
@@ -2037,17 +2054,83 @@ public class AgentService {
                     errorMessage.contains("content_policy_violation") ||
                     errorMessage.contains("responsibleaipolicyviolation")) {
 
-                    logger.error("❌ Azure content filter blocked the structured chat completion request");
-                    logger.error("   Error: {}", e.getMessage());
-                    logger.error("   This usually means the prompt triggered Azure's content safety policies");
-                    logger.error("   Consider: 1) Rephrasing the prompt, 2) Using a different model, or 3) Reviewing Azure content filter settings");
+                    logger.error("Azure content filter blocked the chat completion request");
                     throw new RuntimeException("Content filter violation: " + e.getMessage(), e);
                 }
 
-                logger.error("Structured chat completion request failed", e);
-                throw new RuntimeException("Structured chat completion request failed", e);
+                logger.error("Chat completion request failed", e);
+                throw new RuntimeException("Chat completion request failed", e);
             }
         });
+    }
+
+    /**
+     * Executes a chat completion request for Claude/Anthropic with structured output support.
+     */
+    private <T extends AgentResult> String executeChatCompletionClaudeStructured(
+            String model,
+            List<ChatMessage> messages,
+            Double temperature,
+            int instanceIndex,
+            Class<T> resultClass) {
+
+        // Extract system prompt (first SystemMessage if exists)
+        String systemPrompt = null;
+        List<ClaudeRequest.ClaudeMessage> claudeMessages = new ArrayList<>();
+
+        for (ChatMessage msg : messages) {
+            if (msg instanceof ChatMessage.SystemMessage && systemPrompt == null) {
+                systemPrompt = ((ChatMessage.SystemMessage) msg).getContent().toString();
+            } else if (msg instanceof ChatMessage.UserMessage) {
+                Object content = ((ChatMessage.UserMessage) msg).getContent();
+                claudeMessages.add(ClaudeRequest.ClaudeMessage.builder()
+                        .role("user")
+                        .content(content != null ? content.toString() : "")
+                        .build());
+            } else if (msg instanceof ChatMessage.AssistantMessage) {
+                Object content = ((ChatMessage.AssistantMessage) msg).getContent();
+                claudeMessages.add(ClaudeRequest.ClaudeMessage.builder()
+                        .role("assistant")
+                        .content(content != null ? content.toString() : "")
+                        .build());
+            }
+        }
+
+        ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
+                .model(model)
+                .maxTokens(4096)
+                .system(systemPrompt)
+                .messages(claudeMessages)
+                .temperature(temperature);
+
+        // Add output_format if result class is specified (not DefaultResult)
+        if (resultClass != null && resultClass != DefaultResult.class) {
+            try {
+                ResponseFormat format = JsonSchemaGenerator.createResponseFormatFromClass(resultClass);
+                requestBuilder.outputFormat(convertToClaudeOutputFormat(format));
+            } catch (Exception e) {
+                logger.warn("Failed to create JSON schema for Claude: {}", e.getMessage());
+            }
+        }
+
+        ClaudeResponse response = callClaudeAPI(instanceIndex, requestBuilder.build());
+        return response.getTextContent();
+    }
+
+    /**
+     * Sends a chat completion request without structured output.
+     * Returns DefaultResult with the raw response text.
+     *
+     * @param model       Model name (e.g., "gpt-4o")
+     * @param messages    List of chat messages
+     * @param temperature Temperature (optional, can be null)
+     * @return CompletableFuture with DefaultResult containing the response
+     */
+    public CompletableFuture<DefaultResult> chatCompletion(
+            String model,
+            List<ChatMessage> messages,
+            Double temperature) {
+        return chatCompletion(model, messages, temperature, DefaultResult.class);
     }
 
 
