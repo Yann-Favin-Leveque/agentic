@@ -1263,12 +1263,13 @@ public class AgentService {
     /**
      * Uploads a file to OpenAI/Azure for use with assistants, fine-tuning, etc.
      * Uses round-robin load balancing across configured instances.
+     * Returns an encoded file reference (format: "instanceIndex_fileId") for multi-instance tracking.
      *
      * @param filePath Path to the file to upload
      * @param purpose  Purpose of the file (e.g., "assistants", "fine-tune", "batch")
-     * @return CompletableFuture with FileResponse containing the file ID
+     * @return CompletableFuture with encoded file reference (e.g., "0_file-abc123")
      */
-    public CompletableFuture<io.github.sashirestela.openai.domain.file.FileResponse> uploadFile(
+    public CompletableFuture<String> uploadFile(
             java.nio.file.Path filePath,
             String purpose) {
 
@@ -1289,10 +1290,12 @@ public class AgentService {
                         filePath, formFields,
                         io.github.sashirestela.openai.domain.file.FileResponse.class).join();
 
+                String fileId = response.getId();
                 logger.info("File uploaded: {} -> {} on instance {}",
-                        filePath.getFileName(), response.getId(), instanceIdx);
+                        filePath.getFileName(), fileId, instanceIdx);
 
-                return response;
+                // Encode instance index for multi-instance tracking (like threads/vector stores)
+                return encodeWithInstance(instanceIdx, fileId);
 
             } catch (Exception e) {
                 logger.error("Failed to upload file: {}", filePath, e);
@@ -1303,46 +1306,47 @@ public class AgentService {
 
     /**
      * Uploads a file for use with assistants (convenience method).
+     * Returns an encoded file reference (format: "instanceIndex_fileId").
      *
      * @param filePath Path to the file to upload
-     * @return CompletableFuture with FileResponse containing the file ID
+     * @return CompletableFuture with encoded file reference
      */
-    public CompletableFuture<io.github.sashirestela.openai.domain.file.FileResponse> uploadFileForAssistants(
-            java.nio.file.Path filePath) {
+    public CompletableFuture<String> uploadFileForAssistants(java.nio.file.Path filePath) {
         return uploadFile(filePath, "assistants");
     }
 
     /**
+     * Extracts the actual file ID from an encoded file reference.
+     * Format: "instanceIndex_fileId" → returns fileId
+     * Plain ID → returns as-is
+     */
+    public String extractFileId(String fileRef) {
+        return extractVectorStoreId(fileRef); // Same extraction logic
+    }
+
+    /**
      * Deletes a file from OpenAI/Azure.
+     * Accepts either encoded file reference ("instanceIndex_fileId") or plain file ID.
      *
-     * @param fileId File ID to delete
+     * @param fileRef File reference (encoded or plain)
      * @return CompletableFuture that completes when deletion is done
      */
-    public CompletableFuture<Boolean> deleteFile(String fileId) {
+    public CompletableFuture<Boolean> deleteFile(String fileRef) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // Try to delete from all instances (file might be on any)
-                // In practice, files are usually on a specific instance, but this is safer
-                for (int i = 0; i < instances.size(); i++) {
-                    try {
-                        Instance instance = instances.get(i);
-                        Map<String, String> pathParams = new HashMap<>();
-                        pathParams.put("fileId", fileId);
+                int instanceIndex = extractInstanceIndex(fileRef);
+                String actualFileId = extractFileId(fileRef);
 
-                        httpHelper.delete(instance, ProviderConfig.Endpoint.FILE, null, pathParams).join();
-                        logger.info("File deleted: {} from instance {}", fileId, i);
-                        return true;
-                    } catch (Exception e) {
-                        // File might not exist on this instance, try next
-                        logger.debug("File {} not found on instance {}, trying next...", fileId, i);
-                    }
-                }
+                Instance instance = instances.get(instanceIndex);
+                Map<String, String> pathParams = new HashMap<>();
+                pathParams.put("fileId", actualFileId);
 
-                logger.warn("File {} not found on any instance", fileId);
-                return false;
+                httpHelper.delete(instance, ProviderConfig.Endpoint.FILE, null, pathParams).join();
+                logger.info("File deleted: {} from instance {}", actualFileId, instanceIndex);
+                return true;
 
             } catch (Exception e) {
-                logger.error("Failed to delete file: {}", fileId, e);
+                logger.error("Failed to delete file: {}", fileRef, e);
                 return false;
             }
         });
@@ -1355,7 +1359,8 @@ public class AgentService {
      * For Azure multi-instance, the returned reference encodes the instance index.
      *
      * @param name    Vector store name
-     * @param fileIds List of file IDs to attach
+     * @param fileIds List of file references (can be "instanceIndex_fileId" or plain ID).
+     *                The vector store will be created on the same instance as the first file.
      * @return CompletableFuture with vector store reference.
      *         Format: "instanceIndex_vectorStoreId" for Azure multi-instance, plain ID otherwise.
      *         Example: "2_vs_abc123" means vector store vs_abc123 on instance 2.
@@ -1363,13 +1368,29 @@ public class AgentService {
     public CompletableFuture<String> createVectorStore(String name, List<String> fileIds) {
         return CompletableFuture.supplyAsync(() -> {
             try {
+                // Extract actual file IDs and determine which instance to use
+                // Files must be on the same instance as the vector store
+                int instIndex;
+                List<String> actualFileIds;
+
+                if (fileIds != null && !fileIds.isEmpty()) {
+                    // Use instance from first file reference
+                    instIndex = extractInstanceIndex(fileIds.get(0));
+                    // Extract actual file IDs from all references
+                    actualFileIds = fileIds.stream()
+                            .map(this::extractFileId)
+                            .collect(java.util.stream.Collectors.toList());
+                } else {
+                    // No files - use round-robin
+                    instIndex = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
+                    actualFileIds = fileIds;
+                }
+
                 VectorStoreRequest request = VectorStoreRequest.builder()
                         .name(name)
-                        .fileIds(fileIds)
+                        .fileIds(actualFileIds)
                         .build();
 
-                // Create on specific instance and encode instance index (global round-robin)
-                int instIndex = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
                 Instance instance = instances.get(instIndex);
                 io.github.sashirestela.openai.domain.assistant.VectorStore vectorStore = httpHelper.post(
                         instance, ProviderConfig.Endpoint.VECTOR_STORES, null,
