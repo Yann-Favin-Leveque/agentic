@@ -70,6 +70,7 @@ public final class ProviderConfig {
 
         // Files & Models
         FILES,
+        FILE,                 // /files/{fileId} - single file
         MODELS,
 
         // Vector Store single
@@ -191,6 +192,8 @@ public final class ProviderConfig {
             // Files & Models
             case FILES:
                 return "/v1/files";
+            case FILE:
+                return "/v1/files/{fileId}";
             case MODELS:
                 return "/v1/models";
 
@@ -268,6 +271,8 @@ public final class ProviderConfig {
             // Files & Models (global)
             case FILES:
                 return "/openai/files";
+            case FILE:
+                return "/openai/files/{fileId}";
             case MODELS:
                 return "/openai/models";
 

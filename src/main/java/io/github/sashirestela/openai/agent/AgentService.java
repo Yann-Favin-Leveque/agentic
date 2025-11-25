@@ -1258,6 +1258,98 @@ public class AgentService {
         });
     }
 
+    // ==================== FILE OPERATIONS ====================
+
+    /**
+     * Uploads a file to OpenAI/Azure for use with assistants, fine-tuning, etc.
+     * Uses round-robin load balancing across configured instances.
+     *
+     * @param filePath Path to the file to upload
+     * @param purpose  Purpose of the file (e.g., "assistants", "fine-tune", "batch")
+     * @return CompletableFuture with FileResponse containing the file ID
+     */
+    public CompletableFuture<io.github.sashirestela.openai.domain.file.FileResponse> uploadFile(
+            java.nio.file.Path filePath,
+            String purpose) {
+
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // Use global round-robin for file uploads
+                int instanceIdx = globalInstanceIndex.getAndUpdate(i -> (i + 1) % instances.size());
+                Instance instance = instances.get(instanceIdx);
+
+                logger.debug("Uploading file {} to instance {} with purpose: {}",
+                        filePath.getFileName(), instanceIdx, purpose);
+
+                Map<String, String> formFields = new HashMap<>();
+                formFields.put("purpose", purpose);
+
+                io.github.sashirestela.openai.domain.file.FileResponse response = httpHelper.postMultipart(
+                        instance, ProviderConfig.Endpoint.FILES,
+                        filePath, formFields,
+                        io.github.sashirestela.openai.domain.file.FileResponse.class).join();
+
+                logger.info("File uploaded: {} -> {} on instance {}",
+                        filePath.getFileName(), response.getId(), instanceIdx);
+
+                return response;
+
+            } catch (Exception e) {
+                logger.error("Failed to upload file: {}", filePath, e);
+                throw new RuntimeException("File upload failed: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * Uploads a file for use with assistants (convenience method).
+     *
+     * @param filePath Path to the file to upload
+     * @return CompletableFuture with FileResponse containing the file ID
+     */
+    public CompletableFuture<io.github.sashirestela.openai.domain.file.FileResponse> uploadFileForAssistants(
+            java.nio.file.Path filePath) {
+        return uploadFile(filePath, "assistants");
+    }
+
+    /**
+     * Deletes a file from OpenAI/Azure.
+     *
+     * @param fileId File ID to delete
+     * @return CompletableFuture that completes when deletion is done
+     */
+    public CompletableFuture<Boolean> deleteFile(String fileId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // Try to delete from all instances (file might be on any)
+                // In practice, files are usually on a specific instance, but this is safer
+                for (int i = 0; i < instances.size(); i++) {
+                    try {
+                        Instance instance = instances.get(i);
+                        Map<String, String> pathParams = new HashMap<>();
+                        pathParams.put("fileId", fileId);
+
+                        httpHelper.delete(instance, ProviderConfig.Endpoint.FILE, null, pathParams).join();
+                        logger.info("File deleted: {} from instance {}", fileId, i);
+                        return true;
+                    } catch (Exception e) {
+                        // File might not exist on this instance, try next
+                        logger.debug("File {} not found on instance {}, trying next...", fileId, i);
+                    }
+                }
+
+                logger.warn("File {} not found on any instance", fileId);
+                return false;
+
+            } catch (Exception e) {
+                logger.error("Failed to delete file: {}", fileId, e);
+                return false;
+            }
+        });
+    }
+
+    // ==================== VECTOR STORE OPERATIONS ====================
+
     /**
      * Creates a vector store with file attachments.
      * For Azure multi-instance, the returned reference encodes the instance index.
