@@ -5,13 +5,13 @@
   <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.github.Yann-Favin-Leveque</groupId>
-    <artifactId>simple-openai</artifactId>
-    <version>3.33.0</version>
+    <artifactId>agentic-helper</artifactId>
+    <version>1.0.0</version>
   <packaging>jar</packaging>
 
-  <name>simple-openai</name>
-  <description>A Java library to use the OpenAI API in the simplest possible way. Fork with AgentService for high-level orchestration.</description>
-  <url>https://github.com/Yann-Favin-Leveque/simple-openai</url>
+  <name>agentic-helper</name>
+  <description>A Java library for multi-provider AI orchestration (OpenAI, Azure OpenAI, Azure Anthropic). High-level AgentService with rate limiting, retries, and structured outputs. Originally forked from simple-openai by Sashir Estela.</description>
+  <url>https://github.com/Yann-Favin-Leveque/agentic-helper</url>
 
 
   <licenses>
@@ -40,16 +40,16 @@
   </developers>
 
   <scm>
-    <connection>scm:git:git://github.com/Yann-Favin-Leveque/simple-openai.git</connection>
-    <developerConnection>scm:git:ssh://github.com/Yann-Favin-Leveque/simple-openai.git</developerConnection>
-    <url>https://github.com/Yann-Favin-Leveque/simple-openai/tree/main</url>
+    <connection>scm:git:git://github.com/Yann-Favin-Leveque/agentic-helper.git</connection>
+    <developerConnection>scm:git:ssh://github.com/Yann-Favin-Leveque/agentic-helper.git</developerConnection>
+    <url>https://github.com/Yann-Favin-Leveque/agentic-helper/tree/main</url>
   </scm>
 
   <distributionManagement>
     <repository>
       <id>github</id>
       <name>GitHub Yann-Favin-Leveque Apache Maven Packages</name>
-      <url>https://maven.pkg.github.com/Yann-Favin-Leveque/simple-openai</url>
+      <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic-helper</url>
     </repository>
   </distributionManagement>
 
