@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -98,13 +99,20 @@ public class AgentService {
             logger.info("Using JSON-based instance configuration");
             List<InstanceConfig> instanceConfigs = config.parseInstances();
 
-            // Filter to only enabled instances
+            // Get allowed providers from environment (if set)
+            Set<String> allowedProviders = getAllowedProviders();
+
+            // Filter to only enabled instances AND allowed providers
             List<InstanceConfig> enabledInstances = instanceConfigs.stream()
                     .filter(InstanceConfig::isEnabled)
+                    .filter(ic -> isProviderAllowed(ic, allowedProviders))
                     .collect(java.util.stream.Collectors.toList());
 
-            logger.info("Loaded {} instance(s) from JSON configuration ({} total, {} enabled)",
+            logger.info("Loaded {} instance(s) from JSON configuration ({} total, {} after filtering by enabled + providers)",
                     enabledInstances.size(), instanceConfigs.size(), enabledInstances.size());
+            if (!allowedProviders.isEmpty()) {
+                logger.info("Provider filter active: {}", allowedProviders);
+            }
 
             for (InstanceConfig instanceConfig : enabledInstances) {
                 // Determine provider type
@@ -166,6 +174,60 @@ public class AgentService {
         if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
             loadAgentDefinitions();
         }
+    }
+
+    // ==================== PROVIDER FILTERING ====================
+
+    /**
+     * Environment variable name for allowed providers filter.
+     * Format: comma-separated list of providers (e.g., "openai,azure-openai")
+     * If not set or empty, all providers are allowed.
+     */
+    private static final String ENABLED_PROVIDERS_ENV = "ENABLED_PROVIDERS";
+
+    /**
+     * Gets the set of allowed providers from the environment variable.
+     * @return Set of allowed provider names (lowercase), or empty set if no filter
+     */
+    private Set<String> getAllowedProviders() {
+        String providersEnv = System.getenv(ENABLED_PROVIDERS_ENV);
+        if (providersEnv == null || providersEnv.trim().isEmpty()) {
+            return Set.of();  // Empty = all allowed
+        }
+        return Arrays.stream(providersEnv.split(","))
+                .map(String::trim)
+                .map(String::toLowerCase)
+                .filter(s -> !s.isEmpty())
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * Checks if an instance's provider is allowed by the filter.
+     * @param instanceConfig The instance configuration
+     * @param allowedProviders Set of allowed providers (empty = all allowed)
+     * @return true if the provider is allowed
+     */
+    private boolean isProviderAllowed(InstanceConfig instanceConfig, Set<String> allowedProviders) {
+        if (allowedProviders.isEmpty()) {
+            return true;  // No filter = all allowed
+        }
+        String provider = instanceConfig.getProvider().toLowerCase();
+        // Check exact match or alias match
+        if (allowedProviders.contains(provider)) {
+            return true;
+        }
+        // Handle aliases: "azure" matches "azure-openai"
+        if (instanceConfig.isAzureOpenAI() &&
+            (allowedProviders.contains("azure") || allowedProviders.contains("azure-openai"))) {
+            return true;
+        }
+        if (instanceConfig.isAzureAnthropic() && allowedProviders.contains("azure-anthropic")) {
+            return true;
+        }
+        if (instanceConfig.isOpenAI() && allowedProviders.contains("openai")) {
+            return true;
+        }
+        return false;
     }
 
     // ==================== INSTANCE INDEX ENCODING/DECODING ====================
