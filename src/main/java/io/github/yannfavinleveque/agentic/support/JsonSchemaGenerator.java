@@ -202,7 +202,7 @@ public class JsonSchemaGenerator {
             fieldSchema.set("items", items);
         } else if (fieldType == Object.class) {
             fieldSchema.put("type", "null");
-        } else if (fieldType.getDeclaringClass() != null) {
+        } else if (fieldType.getDeclaringClass() != null || isCustomClass(fieldType)) {
             return buildSchemaForClass(fieldType, visitedClasses);
         } else {
             fieldSchema.put("type", "object");
