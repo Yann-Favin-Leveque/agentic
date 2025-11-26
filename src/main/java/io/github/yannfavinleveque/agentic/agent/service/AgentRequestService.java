@@ -340,26 +340,26 @@ public class AgentRequestService {
                     ))
                     .temperature(agent.getTemperature());
 
-            // Add output_format if agent has resultClass
+            Instance instance = instanceRouter.getInstance(instanceIndex);
+
+            // Get result class if configured
+            Class<?> resultClass = null;
             if (agent.getResultClass() != null && !agent.getResultClass().isEmpty() &&
                     config.getAgentResultClassPackage() != null) {
                 try {
-                    ResponseFormat format = JsonSchemaGenerator.createResponseFormat(
-                            agent.getResultClass(),
-                            config.getAgentResultClassPackage());
-                    requestBuilder.outputFormat(claudeAdapter.convertToClaudeOutputFormat(format));
-                } catch (Exception e) {
-                    logger.warn("Failed to create JSON schema for Claude: {}", e.getMessage());
+                    String fullClassName = config.getAgentResultClassPackage() + "." + agent.getResultClass();
+                    resultClass = Class.forName(fullClassName);
+                } catch (ClassNotFoundException e) {
+                    logger.warn("Result class not found: {}", agent.getResultClass());
                 }
             }
 
-            Instance instance = instanceRouter.getInstance(instanceIndex);
             ClaudeResponse response = claudeAdapter.callClaude(instance, agent.getModel(),
                     agent.getInstructions(),
                     List.of(ClaudeRequest.ClaudeMessage.builder().role("user").content(message).build()),
                     agent.getTemperature(),
                     agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
-                    null);
+                    resultClass);
 
             return response.getTextContent();
 
