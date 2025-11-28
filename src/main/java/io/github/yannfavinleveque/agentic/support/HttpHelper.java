@@ -145,6 +145,7 @@ public class HttpHelper {
                 if (extraHeaders != null) {
                     for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
                         requestBuilder.header(header.getKey(), header.getValue());
+                        logger.debug("Added extra header: {} = {}", header.getKey(), header.getValue());
                     }
                 }
 

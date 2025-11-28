@@ -1,6 +1,8 @@
 package io.github.yannfavinleveque.agentic.agent.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Base interface for typed agent responses with JSON Schema support.
@@ -28,6 +30,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 public interface AgentResult {
 
+    Logger logger = LoggerFactory.getLogger(AgentResult.class);
+
     /**
      * Default JSON mapper for deserializing agent responses.
      */
@@ -44,9 +48,11 @@ public interface AgentResult {
      */
     static <T extends AgentResult> T jsonMapper(String json, Class<T> clazz) {
         try {
+            logger.debug("Attempting to deserialize JSON to {}: {}", clazz.getSimpleName(), json);
             return JSON_MAPPER.readValue(json, clazz);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to map JSON to " + clazz.getSimpleName(), e);
+            logger.error("Failed to deserialize JSON to {}: {}", clazz.getSimpleName(), json, e);
+            throw new RuntimeException("Failed to map JSON to " + clazz.getSimpleName() + ": " + e.getMessage(), e);
         }
     }
 
