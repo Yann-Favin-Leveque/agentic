@@ -102,7 +102,7 @@ public class AgentService {
         this.fileManager = new FileManager(httpHelper, instanceRouter);
         this.batchManager = new BatchManager(httpHelper, instanceRouter);
         this.chatCompletionService = new ChatCompletionService(httpHelper, instanceRouter,
-                claudeAdapter, objectMapper);
+                claudeAdapter, objectMapper, config);
 
         // Initialize agent manager and load definitions
         this.agentManager = new AgentManager(config, httpHelper, instanceRouter, objectMapper);

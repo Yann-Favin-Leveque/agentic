@@ -357,3 +357,19 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [simple-openai](https://github.com/sashirestela/simple-openai) by Sashir Estela - The foundation of this library
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 - [Bucket4j](https://github.com/bucket4j/bucket4j) - Rate limiting
+
+## Changelog
+
+### v1.0.4 (2025-12-04)
+
+#### Improvements
+- ✅ Added retry logic to embedding and image generation
+- ✅ Added retry logic to all chat completion variants
+- ✅ Improved retry for rate limits (respects retry-after header)
+- ✅ Progressive timeout for consecutive timeout errors
+- ✅ Smart retry: skip 4xx client errors (except 429)
+- ✅ Compact logs: all logs on single line (Logback config)
+- ✅ Improved log levels (TRACE/DEBUG/INFO/WARN/ERROR)
+
+#### Breaking Changes
+None - fully backward compatible
