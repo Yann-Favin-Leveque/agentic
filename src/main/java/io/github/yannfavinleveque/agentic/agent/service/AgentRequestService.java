@@ -250,23 +250,41 @@ public class AgentRequestService {
         if (decoded != null) {
             instanceIdx = Integer.parseInt(decoded[0]);
             actualThreadId = decoded[1];
-            logger.debug("Using persistent thread {} on instance {} (model: {})",
-                    actualThreadId, instanceIdx, agent.getModel());
         } else {
             instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
             actualThreadId = threadId;
-            logger.debug("Using model-aware round-robin for agent '{}': selected instance {} for model '{}'",
-                    agent.getName(), instanceIdx, agent.getModel());
         }
 
         Instance instance = instanceRouter.getInstance(instanceIdx);
 
+        // LOG REQUEST START
+        logger.info("→ REQUEST START | Agent: {} (id:{}) | Model: {} | Instance: {} | Thread: {} | Prompt: {}",
+                agent.getName(), agent.getId(), agent.getModel(), instance.getId(),
+                actualThreadId != null ? actualThreadId : "NEW", userMessage);
+
+        String response;
+
         // Check if Anthropic model - use Claude API format
         if (ProviderConfig.isAnthropicModel(agent.getModel())) {
             logger.debug("Routing to Claude API for agent '{}' (model: {})", agent.getName(), agent.getModel());
-            return executeClaudeRequest(agent, userMessage, instanceIdx);
+            response = executeClaudeRequest(agent, userMessage, instanceIdx, actualThreadId);
+        } else {
+            response = executeOpenAIRequest(agent, userMessage, actualThreadId, instanceIdx, instance);
         }
 
+        // LOG RESPONSE END
+        logger.info("← RESPONSE END | Agent: {} (id:{}) | Model: {} | Instance: {} | Thread: {} | Response: {}",
+                agent.getName(), agent.getId(), agent.getModel(), instance.getId(),
+                actualThreadId, response);
+
+        return response;
+    }
+
+    /**
+     * Executes OpenAI Assistant request.
+     */
+    private String executeOpenAIRequest(Agent agent, String userMessage, String actualThreadId,
+                                         int instanceIdx, Instance instance) throws Exception {
         // Get assistant ID for this specific instance
         String assistantId = getAssistantIdForInstance(agent, instanceIdx);
 
@@ -327,7 +345,7 @@ public class AgentRequestService {
     /**
      * Executes a Claude agent request (oneshot - no conversation history).
      */
-    private String executeClaudeRequest(Agent agent, String message, int instanceIndex) {
+    private String executeClaudeRequest(Agent agent, String message, int instanceIndex, String threadId) {
         try {
             ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
                     .model(agent.getModel())
@@ -342,6 +360,8 @@ public class AgentRequestService {
                     .temperature(agent.getTemperature());
 
             Instance instance = instanceRouter.getInstance(instanceIndex);
+
+            logger.debug("Calling Claude API for agent '{}' on instance {}", agent.getName(), instance.getId());
 
             // Get result class if configured
             Class<?> resultClass = null;

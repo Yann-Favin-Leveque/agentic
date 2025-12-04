@@ -273,12 +273,17 @@ public class ChatCompletionService {
         int instanceIdx = instanceRouter.getNextInstanceForModel(model);
         Instance instance = instanceRouter.getInstance(instanceIdx);
 
+        // Truncate text for logging
+        String textPreview = text.length() > 100 ? text.substring(0, 100) + "..." : text;
+
+        // LOG REQUEST START
+        logger.info("→ EMBEDDING START | Model: {} | Instance: {} | Input: {}",
+                model, instance.getId(), textPreview);
+
         EmbeddingRequest request = EmbeddingRequest.builder()
                 .model(model)
                 .input(text)
                 .build();
-
-        logger.trace("Executing embedding request: model={}", model);
 
         EmbeddingResponse response = httpHelper.post(instance, ProviderConfig.Endpoint.EMBEDDINGS,
                 model, request, EmbeddingResponse.class).join();
@@ -294,7 +299,10 @@ public class ChatCompletionService {
             result[i] = embedding.get(i).floatValue();
         }
 
-        logger.debug("Embedding generated ({} dimensions)", result.length);
+        // LOG RESPONSE END
+        logger.info("← EMBEDDING END | Model: {} | Instance: {} | Dimensions: {}",
+                model, instance.getId(), result.length);
+
         return result;
     }
 
@@ -302,6 +310,13 @@ public class ChatCompletionService {
             throws Exception {
         int instanceIdx = instanceRouter.getNextInstanceForModel(model);
         Instance instance = instanceRouter.getInstance(instanceIdx);
+
+        // Truncate prompt for logging
+        String promptPreview = prompt.length() > 100 ? prompt.substring(0, 100) + "..." : prompt;
+
+        // LOG REQUEST START
+        logger.info("→ IMAGE GEN START | Model: {} | Instance: {} | Size: {} | Quality: {} | Prompt: {}",
+                model, instance.getId(), size, quality, promptPreview);
 
         ImageRequest imageRequest = ImageRequest.builder()
                 .model(model)
@@ -312,8 +327,6 @@ public class ChatCompletionService {
                 .responseFormat(io.github.yannfavinleveque.agentic.domain.image.ImageResponseFormat.B64JSON)
                 .build();
 
-        logger.debug("Generating image: model={}, size={}, quality={}", model, size, quality);
-
         ImageGenerationResponse response = httpHelper.post(instance, ProviderConfig.Endpoint.IMAGES_GENERATIONS,
                 model, imageRequest, ImageGenerationResponse.class).join();
 
@@ -322,8 +335,13 @@ public class ChatCompletionService {
                     "Image generation returned empty response");
         }
 
-        logger.info("Image generated successfully");
-        return response.getData().get(0).getB64Json();
+        String imageData = response.getData().get(0).getB64Json();
+
+        // LOG RESPONSE END
+        logger.info("← IMAGE GEN END | Model: {} | Instance: {} | ImageDataSize: {} bytes",
+                model, instance.getId(), imageData != null ? imageData.length() : 0);
+
+        return imageData;
     }
 
     // ==================== EXCEPTION HANDLERS ====================
@@ -503,6 +521,11 @@ public class ChatCompletionService {
     private String executeChatCompletionOpenAI(String model, List<ChatMessage> messages,
                                                 Double temperature, ResponseFormat format,
                                                 Instance instance) {
+        // LOG REQUEST START
+        String messagesPreview = messages.size() + " messages";
+        logger.info("→ CHAT START | Model: {} | Instance: {} | Messages: {} | Temp: {}",
+                model, instance.getId(), messagesPreview, temperature);
+
         ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
                 .model(model)
                 .messages(messages);
@@ -514,8 +537,6 @@ public class ChatCompletionService {
             requestBuilder.responseFormat(format);
         }
 
-        logger.trace("Executing OpenAI chat completion: model={}", model);
-
         Chat chatResponse = httpHelper.post(instance, ProviderConfig.Endpoint.CHAT_COMPLETIONS,
                 model, requestBuilder.build(), Chat.class).join();
 
@@ -524,36 +545,63 @@ public class ChatCompletionService {
                     "No choices returned in chat completion");
         }
 
-        return chatResponse.getChoices().get(0).getMessage().getContent();
+        String response = chatResponse.getChoices().get(0).getMessage().getContent();
+
+        // LOG RESPONSE END
+        String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
+        logger.info("← CHAT END | Model: {} | Instance: {} | Response: {}",
+                model, instance.getId(), responsePreview);
+
+        return response;
     }
 
     private String executeChatCompletionClaude(String model, List<ChatMessage> messages,
                                                 Double temperature, Instance instance) {
+        // LOG REQUEST START
+        String messagesPreview = messages.size() + " messages";
+        logger.info("→ CHAT START | Model: {} | Instance: {} | Messages: {} | Temp: {}",
+                model, instance.getId(), messagesPreview, temperature);
+
         List<ClaudeRequest.ClaudeMessage> claudeMessages = claudeAdapter.convertToClaude(messages);
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
 
-        logger.trace("Executing Claude chat completion: model={}", model);
-
-        ClaudeResponse response = claudeAdapter.callClaude(instance, model, systemPrompt,
+        ClaudeResponse claudeResponse = claudeAdapter.callClaude(instance, model, systemPrompt,
                 claudeMessages, temperature, 4096, null);
 
-        return response.getTextContent();
+        String response = claudeResponse.getTextContent();
+
+        // LOG RESPONSE END
+        String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
+        logger.info("← CHAT END | Model: {} | Instance: {} | Response: {}",
+                model, instance.getId(), responsePreview);
+
+        return response;
     }
 
     private <T extends AgentResult> String executeChatCompletionClaudeStructured(
             String model, List<ChatMessage> messages, Double temperature,
             Instance instance, Class<T> resultClass) {
 
+        // LOG REQUEST START
+        String messagesPreview = messages.size() + " messages";
+        logger.info("→ CHAT STRUCTURED START | Model: {} | Instance: {} | Messages: {} | Temp: {} | ResultClass: {}",
+                model, instance.getId(), messagesPreview, temperature,
+                resultClass != null ? resultClass.getSimpleName() : "null");
+
         List<ClaudeRequest.ClaudeMessage> claudeMessages = claudeAdapter.convertToClaude(messages);
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
 
-        logger.trace("Executing Claude structured chat completion: model={}, resultClass={}",
-                model, resultClass != null ? resultClass.getSimpleName() : "null");
-
-        ClaudeResponse response = claudeAdapter.callClaude(instance, model, systemPrompt,
+        ClaudeResponse claudeResponse = claudeAdapter.callClaude(instance, model, systemPrompt,
                 claudeMessages, temperature, 4096, resultClass);
 
-        return response.getTextContent();
+        String response = claudeResponse.getTextContent();
+
+        // LOG RESPONSE END
+        String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
+        logger.info("← CHAT STRUCTURED END | Model: {} | Instance: {} | Response: {}",
+                model, instance.getId(), responsePreview);
+
+        return response;
     }
 
     private RuntimeException translateException(Exception e) {
