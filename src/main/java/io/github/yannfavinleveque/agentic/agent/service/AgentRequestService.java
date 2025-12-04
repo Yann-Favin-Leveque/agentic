@@ -258,9 +258,9 @@ public class AgentRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
 
         // LOG REQUEST START
-        logger.info("→ REQUEST START | Agent: {} (id:{}) | Model: {} | Instance: {} | Thread: {} | Prompt: {}",
-                agent.getName(), agent.getId(), agent.getModel(), instance.getId(),
-                actualThreadId != null ? actualThreadId : "NEW", userMessage);
+        logger.info("→ REQUEST START | Agent: {} (id:{}) | Prompt: {} | Model: {} | Instance: {} | Thread: {}",
+                agent.getName(), agent.getId(), userMessage, agent.getModel(), instance.getId(),
+                actualThreadId != null ? actualThreadId : "NEW");
 
         String response;
 
@@ -273,9 +273,9 @@ public class AgentRequestService {
         }
 
         // LOG RESPONSE END
-        logger.info("← RESPONSE END | Agent: {} (id:{}) | Model: {} | Instance: {} | Thread: {} | Response: {}",
-                agent.getName(), agent.getId(), agent.getModel(), instance.getId(),
-                actualThreadId, response);
+        logger.info("← RESPONSE END | Agent: {} (id:{}) | Response: {} | Model: {} | Instance: {} | Thread: {}",
+                agent.getName(), agent.getId(), response, agent.getModel(), instance.getId(),
+                actualThreadId);
 
         return response;
     }

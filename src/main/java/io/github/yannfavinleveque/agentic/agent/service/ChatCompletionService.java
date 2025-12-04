@@ -277,8 +277,8 @@ public class ChatCompletionService {
         String textPreview = text.length() > 100 ? text.substring(0, 100) + "..." : text;
 
         // LOG REQUEST START
-        logger.info("→ EMBEDDING START | Model: {} | Instance: {} | Input: {}",
-                model, instance.getId(), textPreview);
+        logger.info("→ EMBEDDING START | Input: {} | Model: {} | Instance: {}",
+                textPreview, model, instance.getId());
 
         EmbeddingRequest request = EmbeddingRequest.builder()
                 .model(model)
@@ -300,8 +300,8 @@ public class ChatCompletionService {
         }
 
         // LOG RESPONSE END
-        logger.info("← EMBEDDING END | Model: {} | Instance: {} | Dimensions: {}",
-                model, instance.getId(), result.length);
+        logger.info("← EMBEDDING END | Dimensions: {} | Model: {} | Instance: {}",
+                result.length, model, instance.getId());
 
         return result;
     }
@@ -315,8 +315,8 @@ public class ChatCompletionService {
         String promptPreview = prompt.length() > 100 ? prompt.substring(0, 100) + "..." : prompt;
 
         // LOG REQUEST START
-        logger.info("→ IMAGE GEN START | Model: {} | Instance: {} | Size: {} | Quality: {} | Prompt: {}",
-                model, instance.getId(), size, quality, promptPreview);
+        logger.info("→ IMAGE GEN START | Prompt: {} | Size: {} | Quality: {} | Model: {} | Instance: {}",
+                promptPreview, size, quality, model, instance.getId());
 
         ImageRequest imageRequest = ImageRequest.builder()
                 .model(model)
@@ -338,8 +338,8 @@ public class ChatCompletionService {
         String imageData = response.getData().get(0).getB64Json();
 
         // LOG RESPONSE END
-        logger.info("← IMAGE GEN END | Model: {} | Instance: {} | ImageDataSize: {} bytes",
-                model, instance.getId(), imageData != null ? imageData.length() : 0);
+        logger.info("← IMAGE GEN END | ImageDataSize: {} bytes | Model: {} | Instance: {}",
+                imageData != null ? imageData.length() : 0, model, instance.getId());
 
         return imageData;
     }
@@ -523,8 +523,8 @@ public class ChatCompletionService {
                                                 Instance instance) {
         // LOG REQUEST START
         String messagesPreview = messages.size() + " messages";
-        logger.info("→ CHAT START | Model: {} | Instance: {} | Messages: {} | Temp: {}",
-                model, instance.getId(), messagesPreview, temperature);
+        logger.info("→ CHAT START | Messages: {} | Temp: {} | Model: {} | Instance: {}",
+                messagesPreview, temperature, model, instance.getId());
 
         ChatRequest.ChatRequestBuilder requestBuilder = ChatRequest.builder()
                 .model(model)
@@ -549,8 +549,8 @@ public class ChatCompletionService {
 
         // LOG RESPONSE END
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("← CHAT END | Model: {} | Instance: {} | Response: {}",
-                model, instance.getId(), responsePreview);
+        logger.info("← CHAT END | Response: {} | Model: {} | Instance: {}",
+                responsePreview, model, instance.getId());
 
         return response;
     }
@@ -559,8 +559,8 @@ public class ChatCompletionService {
                                                 Double temperature, Instance instance) {
         // LOG REQUEST START
         String messagesPreview = messages.size() + " messages";
-        logger.info("→ CHAT START | Model: {} | Instance: {} | Messages: {} | Temp: {}",
-                model, instance.getId(), messagesPreview, temperature);
+        logger.info("→ CHAT START | Messages: {} | Temp: {} | Model: {} | Instance: {}",
+                messagesPreview, temperature, model, instance.getId());
 
         List<ClaudeRequest.ClaudeMessage> claudeMessages = claudeAdapter.convertToClaude(messages);
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
@@ -572,8 +572,8 @@ public class ChatCompletionService {
 
         // LOG RESPONSE END
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("← CHAT END | Model: {} | Instance: {} | Response: {}",
-                model, instance.getId(), responsePreview);
+        logger.info("← CHAT END | Response: {} | Model: {} | Instance: {}",
+                responsePreview, model, instance.getId());
 
         return response;
     }
@@ -584,9 +584,9 @@ public class ChatCompletionService {
 
         // LOG REQUEST START
         String messagesPreview = messages.size() + " messages";
-        logger.info("→ CHAT STRUCTURED START | Model: {} | Instance: {} | Messages: {} | Temp: {} | ResultClass: {}",
-                model, instance.getId(), messagesPreview, temperature,
-                resultClass != null ? resultClass.getSimpleName() : "null");
+        logger.info("→ CHAT STRUCTURED START | Messages: {} | Temp: {} | ResultClass: {} | Model: {} | Instance: {}",
+                messagesPreview, temperature, resultClass != null ? resultClass.getSimpleName() : "null",
+                model, instance.getId());
 
         List<ClaudeRequest.ClaudeMessage> claudeMessages = claudeAdapter.convertToClaude(messages);
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
@@ -598,8 +598,8 @@ public class ChatCompletionService {
 
         // LOG RESPONSE END
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("← CHAT STRUCTURED END | Model: {} | Instance: {} | Response: {}",
-                model, instance.getId(), responsePreview);
+        logger.info("← CHAT STRUCTURED END | Response: {} | Model: {} | Instance: {}",
+                responsePreview, model, instance.getId());
 
         return response;
     }
