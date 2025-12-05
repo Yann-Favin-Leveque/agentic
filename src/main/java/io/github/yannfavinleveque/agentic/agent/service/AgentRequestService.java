@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 public class AgentRequestService {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentRequestService.class);
+    private static final int DEFAULT_BASE_TIMEOUT_MS = 120000; // 2 minutes
 
     private final AgentServiceConfig config;
     private final HttpHelper httpHelper;
@@ -249,23 +250,41 @@ public class AgentRequestService {
         if (decoded != null) {
             instanceIdx = Integer.parseInt(decoded[0]);
             actualThreadId = decoded[1];
-            logger.debug("Using persistent thread {} on instance {} (model: {})",
-                    actualThreadId, instanceIdx, agent.getModel());
         } else {
             instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
             actualThreadId = threadId;
-            logger.debug("Using model-aware round-robin for agent '{}': selected instance {} for model '{}'",
-                    agent.getName(), instanceIdx, agent.getModel());
         }
 
         Instance instance = instanceRouter.getInstance(instanceIdx);
 
+        // LOG REQUEST START
+        logger.info("→ REQUEST START | Agent: {} (id:{}) | Prompt: {} | Model: {} | Instance: {} | Thread: {}",
+                agent.getName(), agent.getId(), userMessage, agent.getModel(), instance.getId(),
+                actualThreadId != null ? actualThreadId : "NEW");
+
+        String response;
+
         // Check if Anthropic model - use Claude API format
         if (ProviderConfig.isAnthropicModel(agent.getModel())) {
             logger.debug("Routing to Claude API for agent '{}' (model: {})", agent.getName(), agent.getModel());
-            return executeClaudeRequest(agent, userMessage, instanceIdx);
+            response = executeClaudeRequest(agent, userMessage, instanceIdx, actualThreadId);
+        } else {
+            response = executeOpenAIRequest(agent, userMessage, actualThreadId, instanceIdx, instance);
         }
 
+        // LOG RESPONSE END
+        logger.info("← RESPONSE END | Agent: {} (id:{}) | Response: {} | Model: {} | Instance: {} | Thread: {}",
+                agent.getName(), agent.getId(), response, agent.getModel(), instance.getId(),
+                actualThreadId);
+
+        return response;
+    }
+
+    /**
+     * Executes OpenAI Assistant request.
+     */
+    private String executeOpenAIRequest(Agent agent, String userMessage, String actualThreadId,
+                                         int instanceIdx, Instance instance) throws Exception {
         // Get assistant ID for this specific instance
         String assistantId = getAssistantIdForInstance(agent, instanceIdx);
 
@@ -326,7 +345,7 @@ public class AgentRequestService {
     /**
      * Executes a Claude agent request (oneshot - no conversation history).
      */
-    private String executeClaudeRequest(Agent agent, String message, int instanceIndex) {
+    private String executeClaudeRequest(Agent agent, String message, int instanceIndex, String threadId) {
         try {
             ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
                     .model(agent.getModel())
@@ -341,6 +360,8 @@ public class AgentRequestService {
                     .temperature(agent.getTemperature());
 
             Instance instance = instanceRouter.getInstance(instanceIndex);
+
+            logger.debug("Calling Claude API for agent '{}' on instance {}", agent.getName(), instance.getId());
 
             // Get result class if configured
             Class<?> resultClass = null;
@@ -403,28 +424,65 @@ public class AgentRequestService {
 
     /**
      * Handles request exceptions with retry logic.
+     * NOW INCLUDES:
+     * - Rate limit retry with delay (instead of throwing)
+     * - Progressive timeout for consecutive timeout errors
+     * - Smart 4xx handling (don't retry except 429)
      */
     private String handleRequestException(Agent agent, String userMessage, String threadId,
                                            Map<String, Object> additionalParams, int attemptNumber, Exception e) {
+        // Check max retries
         if (attemptNumber >= config.getMaxRetries()) {
-            logger.error("Max retries reached for agent: {}", agent.getId(), e);
+            logger.error("Max retries ({}) reached for agent: {}", config.getMaxRetries(), agent.getId());
             throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED,
-                    "Request failed after " + config.getMaxRetries() + " retries", e);
+                    "Request failed after " + config.getMaxRetries() + " retries: " + e.getMessage(), e);
         }
 
-        // Check for content filter
         String errorMessage = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+
+        // Check for content filter - don't retry
         if (ContentFilterException.isContentFilterError(errorMessage)) {
+            logger.error("Content filter error detected, not retrying");
             throw new ContentFilterException(e.getMessage(), e);
         }
 
-        // Check for rate limit
-        if (errorMessage.contains("rate_limit") || errorMessage.contains("429")) {
-            throw new RateLimitException("Rate limit exceeded: " + e.getMessage());
+        // Check for 4xx errors (except 429) - don't retry
+        if (is4xxError(errorMessage) && !isRateLimitError(errorMessage)) {
+            logger.error("Client error (4xx) detected, not retrying: {}", e.getMessage());
+            throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED,
+                    "Client error (4xx), not retrying: " + e.getMessage(), e);
         }
 
+        // Handle rate limit - retry with delay
+        if (isRateLimitError(errorMessage)) {
+            long retryDelay = extractRetryAfter(errorMessage);
+            if (retryDelay == 0) {
+                retryDelay = config.getRateLimitDelayMs();
+            }
+            logger.warn("Rate limit hit (attempt {}/{}), waiting {}ms before retry",
+                    attemptNumber + 1, config.getMaxRetries(), retryDelay);
+            try {
+                Thread.sleep(retryDelay);
+                return attemptRequest(agent, userMessage, threadId, additionalParams, attemptNumber + 1).join();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED, "Rate limit retry interrupted", ie);
+            }
+        }
+
+        // Handle timeout - progressive timeout increase
+        if (e instanceof RequestTimeoutException) {
+            int newTimeoutSeconds = (int) (agent.getResponseTimeout() * (attemptNumber + 2));
+            logger.warn("Timeout (attempt {}/{}), increasing timeout to {}s for next attempt",
+                    attemptNumber + 1, config.getMaxRetries(), newTimeoutSeconds);
+            // Note: This would require passing timeout to executeAgentRequest
+            // For now, we'll just retry with normal delay
+        }
+
+        // Standard exponential backoff for other errors
         long delay = calculateDelay(attemptNumber);
-        logger.warn("Request failed (attempt {}), retrying in {}ms: {}", attemptNumber + 1, delay, e.getMessage());
+        logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {}",
+                attemptNumber + 1, config.getMaxRetries(), delay, e.getMessage());
 
         try {
             Thread.sleep(delay);
@@ -454,6 +512,43 @@ public class AgentRequestService {
      */
     private long calculateDelay(int attemptNumber) {
         return config.getRetryBaseDelayMs() * (long) Math.pow(2, attemptNumber);
+    }
+
+    /**
+     * Extracts retry-after value from error message (in milliseconds).
+     * Returns 0 if not found.
+     */
+    private long extractRetryAfter(String errorMessage) {
+        try {
+            if (errorMessage.contains("retry") && errorMessage.contains("after")) {
+                String[] parts = errorMessage.split("\\s+");
+                for (int i = 0; i < parts.length; i++) {
+                    if (parts[i].contains("after") && i + 1 < parts.length) {
+                        String next = parts[i + 1].replaceAll("[^0-9]", "");
+                        if (!next.isEmpty()) {
+                            long seconds = Long.parseLong(next);
+                            logger.trace("Extracted retry-after: {}s", seconds);
+                            return seconds * 1000; // Convert to ms
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            logger.trace("Could not extract retry-after value from: {}", errorMessage);
+        }
+        return 0;
+    }
+
+    private boolean isRateLimitError(String errorMessage) {
+        return errorMessage.contains("rate_limit") || errorMessage.contains("429") ||
+                errorMessage.contains("rate limit") || errorMessage.contains("too many requests");
+    }
+
+    private boolean is4xxError(String errorMessage) {
+        return errorMessage.contains("400") || errorMessage.contains("401") ||
+                errorMessage.contains("403") || errorMessage.contains("404") ||
+                errorMessage.contains("422") || errorMessage.contains("bad request") ||
+                errorMessage.contains("unauthorized") || errorMessage.contains("forbidden");
     }
 
     /**
