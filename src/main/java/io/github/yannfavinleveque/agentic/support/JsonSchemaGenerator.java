@@ -124,10 +124,7 @@ public class JsonSchemaGenerator {
         // Handle Jackson JSON types (ArrayNode, ObjectNode, JsonNode)
         if (fieldType == ArrayNode.class) {
             fieldSchema.put("type", "array");
-            ObjectNode items = mapper.createObjectNode();
-            items.put("type", "object");
-            items.put("additionalProperties", true);
-            fieldSchema.set("items", items);
+            // For ArrayNode, don't define items structure - let it be flexible
             fieldSchema.put("description", "Field " + field.getName() + " of type ArrayNode");
             return fieldSchema;
         } else if (fieldType == ObjectNode.class || fieldType == JsonNode.class) {
