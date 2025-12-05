@@ -1,6 +1,8 @@
 package io.github.yannfavinleveque.agentic.support;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.yannfavinleveque.agentic.common.ResponseFormat;
 import org.slf4j.Logger;
@@ -118,6 +120,22 @@ public class JsonSchemaGenerator {
     private static ObjectNode buildSchemaForField(Field field, Set<Class<?>> visitedClasses) {
         ObjectNode fieldSchema = mapper.createObjectNode();
         Class<?> fieldType = field.getType();
+
+        // Handle Jackson JSON types (ArrayNode, ObjectNode, JsonNode)
+        if (fieldType == ArrayNode.class) {
+            fieldSchema.put("type", "array");
+            ObjectNode items = mapper.createObjectNode();
+            items.put("type", "object");
+            items.put("additionalProperties", true);
+            fieldSchema.set("items", items);
+            fieldSchema.put("description", "Field " + field.getName() + " of type ArrayNode");
+            return fieldSchema;
+        } else if (fieldType == ObjectNode.class || fieldType == JsonNode.class) {
+            fieldSchema.put("type", "object");
+            fieldSchema.put("additionalProperties", true);
+            fieldSchema.put("description", "Field " + field.getName() + " of type " + fieldType.getSimpleName());
+            return fieldSchema;
+        }
 
         if (fieldType == String.class) {
             fieldSchema.put("type", "string");
