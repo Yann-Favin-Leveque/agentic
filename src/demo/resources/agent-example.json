@@ -1,0 +1,18 @@
+{
+  "id": "customer-support-agent",
+  "name": "Customer Support Agent",
+  "model": "gpt-4o",
+  "instructions": "You are a helpful customer support agent. Provide clear, friendly, and professional assistance to customers. Always be empathetic and solution-oriented.",
+  "resultClass": "CustomerSupportResult",
+  "temperature": 0.7,
+  "retrieval": false,
+  "responseTimeout": 120000,
+  "threadType": "SINGLE",
+  "agentType": "support",
+  "createOnAppStart": true,
+  "assistantIds": [
+    "asst_openai_abc123",
+    "asst_azure1_def456",
+    "asst_azure2_ghi789"
+  ]
+}
