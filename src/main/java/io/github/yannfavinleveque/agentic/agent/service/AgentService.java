@@ -173,6 +173,36 @@ public class AgentService {
         return conversationManager.getMessageCount(conversationId);
     }
 
+    /**
+     * Inserts a message into an existing conversation.
+     * <p>
+     * Can be called while an autonomous agent is running on that conversation.
+     * The message will be picked up in the next iteration of the agent loop.
+     * </p>
+     *
+     * @param conversationId Conversation ID
+     * @param role           Message role ("user", "assistant", "system")
+     * @param content        Message content
+     */
+    public void insertMessage(String conversationId, String role, String content) {
+        conversationManager.addMessage(conversationId,
+                Message.builder().role(role).content(content).build());
+    }
+
+    /**
+     * Gets the full message history of a conversation.
+     * <p>
+     * Useful to inspect whether injected messages were processed by an autonomous agent.
+     * Returns a copy of the history to prevent external modification.
+     * </p>
+     *
+     * @param conversationId Conversation ID
+     * @return List of messages (empty list if conversation doesn't exist)
+     */
+    public List<Message> getConversation(String conversationId) {
+        return conversationManager.getHistory(conversationId);
+    }
+
     // ==================== AGENT MANAGEMENT ====================
 
     /**

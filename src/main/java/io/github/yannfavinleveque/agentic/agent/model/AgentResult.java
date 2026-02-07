@@ -1,21 +1,23 @@
 package io.github.yannfavinleveque.agentic.agent.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * Base interface for typed agent responses with JSON Schema support. Implement this interface in
+ * Base class for typed agent responses with JSON Schema support. Extend this class in
  * your result classes to enable automatic JSON Schema generation and structured output mapping.
  * <p>
  * Example implementation:
  * </p>
  *
  * <pre>{@code
- * public class WeatherResult implements AgentResult {
+ * public class WeatherResult extends AgentResult {
  *
  *     public String location;
  *     public double temperature;
@@ -24,11 +26,12 @@ import java.util.List;
  * }
  * }</pre>
  * <p>
- * The implementing class will automatically:
+ * The extending class will automatically:
  * <ul>
  * <li>Generate a JSON Schema for OpenAI structured outputs</li>
  * <li>Be mapped from JSON responses using Jackson</li>
  * <li>Support nested objects and collections</li>
+ * <li>Carry function calls from the model alongside structured text</li>
  * </ul>
  * </p>
  *
@@ -47,36 +50,50 @@ import java.util.List;
  * }
  * }</pre>
  *
- * @see AgentService # requestAgent(String, Agent)
  * @see FunctionCall
  */
-public interface AgentResult {
+public abstract class AgentResult {
 
-    Logger logger = LoggerFactory.getLogger(AgentResult.class);
+    private static final Logger logger = LoggerFactory.getLogger(AgentResult.class);
+
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     /**
-     * Default JSON mapper for deserializing agent responses.
+     * Function calls requested by the model.
+     * Excluded from JSON schema generation via @JsonIgnore so it doesn't
+     * pollute the structured output schema sent to the LLM.
      */
-    ObjectMapper JSON_MAPPER = new ObjectMapper();
+    @JsonIgnore
+    private List<FunctionCall> functionCalls = new ArrayList<>();
 
     /**
-     * Gets the content/response from the agent. Implementations should return the primary text content.
-     * Default implementation returns toString() for backward compatibility.
+     * Gets the content/response from the agent. Subclasses may override for custom behavior.
+     * Default implementation returns toString().
      *
      * @return The content string
      */
-    default String getContent() {
+    public String getContent() {
         return this.toString();
     }
 
     /**
-     * Returns the list of function calls requested by the model. When the model wants to invoke
-     * tools/functions, this list will contain the function names and arguments.
+     * Returns the list of function calls requested by the model.
      *
      * @return List of function calls, or empty list if none
      */
-    default List<FunctionCall> getFunctionCalls() {
-        return Collections.emptyList();
+    @JsonIgnore
+    public List<FunctionCall> getFunctionCalls() {
+        return functionCalls != null ? functionCalls : Collections.emptyList();
+    }
+
+    /**
+     * Sets the function calls on this result.
+     *
+     * @param functionCalls List of function calls from the model
+     */
+    @JsonIgnore
+    public void setFunctionCalls(List<FunctionCall> functionCalls) {
+        this.functionCalls = functionCalls != null ? functionCalls : new ArrayList<>();
     }
 
     /**
@@ -84,21 +101,21 @@ public interface AgentResult {
      *
      * @return true if there are function calls to process
      */
-    default boolean hasFunctionCalls() {
-        List<FunctionCall> calls = getFunctionCalls();
-        return calls != null && !calls.isEmpty();
+    @JsonIgnore
+    public boolean hasFunctionCalls() {
+        return functionCalls != null && !functionCalls.isEmpty();
     }
 
     /**
      * Deserialize JSON string to the specified result class.
      *
      * @param json  JSON string from agent response
-     * @param clazz Target class implementing AgentResult
+     * @param clazz Target class extending AgentResult
      * @param <T>   Result type
      * @return Deserialized object
      * @throws RuntimeException if JSON parsing fails
      */
-    static <T extends AgentResult> T jsonMapper(String json, Class<T> clazz) {
+    public static <T extends AgentResult> T jsonMapper(String json, Class<T> clazz) {
         try {
             logger.debug("Attempting to deserialize JSON to {}: {}", clazz.getSimpleName(), json);
             return JSON_MAPPER.readValue(json, clazz);

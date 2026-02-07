@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class MathResult implements AgentResult {
+public class MathResult extends AgentResult {
 
     @JsonProperty("expression")
     private String expression;

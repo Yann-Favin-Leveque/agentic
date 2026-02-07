@@ -19,7 +19,7 @@ public class AgentServiceDemo {
     /**
      * Example result class for structured outputs.
      */
-    public static class WeatherResult implements AgentResult {
+    public static class WeatherResult extends AgentResult {
 
         public String location;
         public double temperature;

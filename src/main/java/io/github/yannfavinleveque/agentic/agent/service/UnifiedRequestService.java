@@ -1193,28 +1193,39 @@ public class UnifiedRequestService {
      */
     private CompletableFuture<AgentResult> deserializeResponse(Agent agent, ParsedResponse parsed) {
         try {
-            // If there are function calls, return them in DefaultResult (regardless of resultClass)
-            if (parsed.hasFunctionCalls()) {
-                String textContent = parsed.getTextContent();
-                return CompletableFuture.completedFuture(
-                        new DefaultResult(textContent, parsed.getFunctionCalls()));
-            }
-
             String jsonResponse = parsed.getTextContent();
+            List<FunctionCall> functionCalls = parsed.hasFunctionCalls() ? parsed.getFunctionCalls() : null;
 
+            // No resultClass → return DefaultResult
             if (agent.getResultClass() == null || agent.getResultClass().isEmpty()) {
-                return CompletableFuture.completedFuture(new DefaultResult(jsonResponse));
+                DefaultResult defaultResult = new DefaultResult(jsonResponse);
+                if (functionCalls != null) defaultResult.setFunctionCalls(functionCalls);
+                return CompletableFuture.completedFuture(defaultResult);
             }
 
             String fullClassName = config.resolveResultClassName(agent.getResultClass());
             if (fullClassName == null) {
                 logger.warn("Cannot resolve result class '{}' for agent {} - use FQCN or configure agentResultClassPackage",
                         agent.getResultClass(), agent.getId());
-                return CompletableFuture.completedFuture(new DefaultResult(jsonResponse));
+                DefaultResult defaultResult = new DefaultResult(jsonResponse);
+                if (functionCalls != null) defaultResult.setFunctionCalls(functionCalls);
+                return CompletableFuture.completedFuture(defaultResult);
             }
 
+            // Parse text content as resultClass
             Class<?> resultClass = Class.forName(fullClassName);
-            AgentResult result = (AgentResult) objectMapper.readValue(jsonResponse, resultClass);
+            AgentResult result;
+            if (jsonResponse != null && !jsonResponse.isBlank()) {
+                result = (AgentResult) objectMapper.readValue(jsonResponse, resultClass);
+            } else {
+                result = (AgentResult) resultClass.getDeclaredConstructor().newInstance();
+            }
+
+            // Attach function calls if present (all AgentResult subclasses support this now)
+            if (functionCalls != null && !functionCalls.isEmpty()) {
+                result.setFunctionCalls(functionCalls);
+            }
+
             return CompletableFuture.completedFuture(result);
 
         } catch (ClassNotFoundException e) {

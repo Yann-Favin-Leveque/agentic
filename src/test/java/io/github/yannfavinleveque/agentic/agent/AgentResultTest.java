@@ -22,7 +22,7 @@ class AgentResultTest {
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class WeatherResult implements AgentResult {
+    public static class WeatherResult extends AgentResult {
 
         @JsonProperty("city")
         private String city;
@@ -46,7 +46,7 @@ class AgentResultTest {
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class CodeAnalysisResult implements AgentResult {
+    public static class CodeAnalysisResult extends AgentResult {
 
         @JsonProperty("language")
         private String language;

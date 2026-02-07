@@ -17,7 +17,7 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ResearchResult implements AgentResult {
+public class ResearchResult extends AgentResult {
 
     @JsonProperty("topic")
     private String topic;

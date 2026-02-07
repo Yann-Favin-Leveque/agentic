@@ -56,8 +56,8 @@ This project was originally forked from [simple-openai](https://github.com/sashi
 
 ```bash
 # Clone and install locally
-git clone https://github.com/Yann-Favin-Leveque/agentic-helper.git
-cd agentic-helper
+git clone https://github.com/Yann-Favin-Leveque/agentic.git
+cd agentic
 mvn clean install -DskipTests
 ```
 
@@ -79,7 +79,7 @@ Add the repository to your `pom.xml`:
 <repositories>
     <repository>
         <id>github</id>
-        <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic-helper</url>
+        <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic</url>
     </repository>
 </repositories>
 
@@ -99,7 +99,7 @@ import io.github.yannfavinleveque.agentic.agent.core.Agent;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
 
 // 1. Configure instances via JSON
-String instancesJson = System.getenv("OPENAI_INSTANCES");
+String instancesJson = System.getenv("LLM_INSTANCES");
 
 AgentServiceConfig config = AgentServiceConfig.builder()
     .instancesJson(instancesJson)
@@ -125,49 +125,50 @@ System.out.println(result.getContent());
 // Output: The capital of France is Paris.
 
 // OR: Use a model directly (no agent registration needed)
-AgentResult result2 = service.requestAgent("gpt-4o", "What is 2+2?")
+AgentResult result2 = service.requestModel("gpt-4o", "What is 2+2?")
     .get(60, TimeUnit.SECONDS);
 ```
 
 ### Direct Model Usage (No Agent Registration)
 
-You can use model names directly without registering an agent:
+Use `requestModel()` to call any model directly without registering an agent:
 
 ```java
 // Simple request with model name
-AgentResult result = service.requestAgent("gpt-4o", "Hello!")
+AgentResult result = service.requestModel("gpt-4o", "Hello!")
     .get(60, TimeUnit.SECONDS);
 
-// With web search (add -websearch suffix)
-AgentResult result = service.requestAgent("gpt-4o-websearch", "What is today's date?")
+// With options (web search, structured output, images, etc.)
+AgentResult result = service.requestModel("gpt-4o", "What is today's date?",
+    ModelRequestOptions.withWebSearch())
     .get(60, TimeUnit.SECONDS);
 
-// With code interpreter (add -codeinterpreter suffix)
-AgentResult result = service.requestAgent("gpt-4o-codeinterpreter", "Calculate factorial of 10")
+// With code interpreter
+AgentResult result = service.requestModel("gpt-4o", "Calculate factorial of 10",
+    ModelRequestOptions.withCodeInterpreter())
     .get(60, TimeUnit.SECONDS);
 
-// Vision with model name
-List<Message> history = new ArrayList<>();
-history.add(Message.builder()
-    .role("user")
-    .content(List.of(
-        Message.ContentPart.text("What's in this image?"),
-        Message.ContentPart.pngBase64(imageBase64)
-    ))
-    .build());
-AgentResult result = service.requestAgent("gpt-4o", "Analyze", history)
+// With structured output
+AgentResult result = service.requestModel("gpt-4o", "Analyze this data",
+    ModelRequestOptions.withResultClass(MyResult.class))
     .get(60, TimeUnit.SECONDS);
+
+// With multiple options
+AgentResult result = service.requestModel("gpt-4o", "Research and analyze",
+    ModelRequestOptions.builder()
+        .webSearch(true)
+        .temperature(0.7)
+        .maxTokens(2000)
+        .instructions("You are a research assistant")
+        .build())
+    .get(120, TimeUnit.SECONDS);
 ```
-
-**Supported model suffixes:**
-- `-websearch` - Enables web search tool
-- `-codeinterpreter` - Enables code interpreter tool
 
 ## Configuration
 
 ### JSON Instance Configuration
 
-Set the `OPENAI_INSTANCES` environment variable with your provider configurations:
+Set the `LLM_INSTANCES` environment variable with your provider configurations:
 
 ```json
 [
@@ -237,7 +238,7 @@ AgentServiceConfig config = AgentServiceConfig.builder()
 @Configuration
 public class AgentServiceConfiguration {
 
-    @Value("${openai.instances}")
+    @Value("${llm.instances}")
     private String instancesJson;
 
     @Bean
@@ -712,7 +713,7 @@ public class AnalysisResult implements AgentResult {
 
 // Setup
 AgentServiceConfig config = AgentServiceConfig.builder()
-    .instancesJson(System.getenv("OPENAI_INSTANCES"))
+    .instancesJson(System.getenv("LLM_INSTANCES"))
     .agentResultClassPackage("com.myapp.model")
     .build();
 AgentService service = new AgentService(config);
@@ -765,14 +766,18 @@ Generate text embeddings for semantic search:
 
 ```java
 // Single text
-float[] embedding = service.generateEmbedding("Hello world", "text-embedding-3-small")
+float[] embedding = service.requestEmbedding("Hello world", "text-embedding-3-small")
+    .get(30, TimeUnit.SECONDS);
+
+// Default model
+float[] embedding = service.requestEmbedding("Hello world")
     .get(30, TimeUnit.SECONDS);
 
 System.out.println("Dimensions: " + embedding.length); // 1536
 
 // Batch embeddings
 List<String> texts = List.of("Hello", "World", "Test");
-List<float[]> embeddings = service.generateEmbeddingsBatch(texts, "text-embedding-3-small")
+List<float[]> embeddings = service.requestEmbeddings(texts, "text-embedding-3-small")
     .get(60, TimeUnit.SECONDS);
 ```
 
@@ -784,22 +789,21 @@ Generate images using DALL-E:
 import io.github.yannfavinleveque.agentic.domain.image.Size;
 import io.github.yannfavinleveque.agentic.domain.image.ImageRequest.Quality;
 
-// Generate image (returns base64)
-String imageBase64 = service.generateImage(
+// Simple (returns base64)
+String imageBase64 = service.requestImage("A cat in space")
+    .get(120, TimeUnit.SECONDS);
+
+// With options
+String imageBase64 = service.requestImage(
     "A beautiful sunset over mountains",
     "dall-e-3",
     Size.X1024,
     Quality.HD
 ).get(120, TimeUnit.SECONDS);
 
-// Generate and save to file
-Path imagePath = service.generateImageToFile(
-    "A futuristic city",
-    "dall-e-3",
-    Size.X1024,
-    Quality.STANDARD,
-    Paths.get("output.png")
-).get(120, TimeUnit.SECONDS);
+// Edit an existing image
+String edited = service.requestImageEdit(existingImageBase64, "Add sunglasses to the cat")
+    .get(120, TimeUnit.SECONDS);
 ```
 
 ## Agent JSON Schema
@@ -867,7 +871,7 @@ Agents can be defined in JSON files or registered programmatically.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_INSTANCES` | JSON array of instance configurations (required) |
+| `LLM_INSTANCES` | JSON array of instance configurations (required) |
 | `ENABLED_PROVIDERS` | Comma-separated list of providers to enable (optional) |
 
 ### Provider Filtering
