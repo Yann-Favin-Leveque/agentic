@@ -67,7 +67,7 @@ Then add to your project's `pom.xml`:
 <dependency>
     <groupId>io.github.Yann-Favin-Leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.0</version>
+    <version>1.6.1</version>
 </dependency>
 ```
 
@@ -86,7 +86,7 @@ Add the repository to your `pom.xml`:
 <dependency>
     <groupId>io.github.Yann-Favin-Leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.0</version>
+    <version>1.6.1</version>
 </dependency>
 ```
 
