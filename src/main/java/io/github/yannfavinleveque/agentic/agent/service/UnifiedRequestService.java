@@ -43,6 +43,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Unified stateless request service for both OpenAI and Claude. Uses OpenAI Responses API and
@@ -87,12 +88,32 @@ public class UnifiedRequestService {
     private static class InstanceLimiter {
 
         final AtomicInteger inProgress = new AtomicInteger(0);
+        final AtomicLong lastRequestTimeMs = new AtomicLong(0);
         final int maxConcurrent;
+        final long minIntervalMs; // minimum ms between requests (1000 / requestsPerSecond)
         final String instanceId;
 
-        InstanceLimiter(String instanceId, int maxConcurrent) {
+        InstanceLimiter(String instanceId, int maxConcurrent, int requestsPerSecond) {
             this.instanceId = instanceId;
             this.maxConcurrent = maxConcurrent;
+            this.minIntervalMs = requestsPerSecond > 0 ? 1000L / requestsPerSecond : 0;
+        }
+
+        /**
+         * Returns the delay in ms needed before the next request can be sent.
+         * Updates lastRequestTimeMs atomically to "claim" the next slot.
+         */
+        long acquireRateSlot() {
+            if (minIntervalMs <= 0) return 0;
+            while (true) {
+                long last = lastRequestTimeMs.get();
+                long now = System.currentTimeMillis();
+                long earliest = last + minIntervalMs;
+                long nextTime = Math.max(now, earliest);
+                if (lastRequestTimeMs.compareAndSet(last, nextTime)) {
+                    return Math.max(0, nextTime - now);
+                }
+            }
         }
 
         boolean tryAcquire() {
@@ -269,10 +290,29 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
+        // Rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> {
+                        if (!limiter.tryAcquire()) {
+                            return delayAsync(50)
+                                    .thenCompose(v2 -> executeRequestAgentWithImages(agent, messagesWithUser, attempt));
+                        }
+                        return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
+                    });
+        }
+
         if (!limiter.tryAcquire()) {
             return delayAsync(50)
                     .thenCompose(v -> executeRequestAgentWithImages(agent, messagesWithUser, attempt));
         }
+
+        return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
+    }
+
+    private CompletableFuture<ParsedResponse> executeRequestAgentWithImagesAfterPermit(
+            Agent agent, List<Message> messagesWithUser, Instance instance, InstanceLimiter limiter) {
 
         logger.info("-> REQUEST AGENT [VISION] | Agent: {} | Model: {} | Instance: {} | Messages: {}",
                 agent.getName(), agent.getModel(), instance.getId(), messagesWithUser.size());
@@ -616,10 +656,30 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
+        // Rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> {
+                        if (!limiter.tryAcquire()) {
+                            return delayAsync(50)
+                                    .thenCompose(v2 -> executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt));
+                        }
+                        return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
+                    });
+        }
+
         if (!limiter.tryAcquire()) {
             return delayAsync(50)
                     .thenCompose(v -> executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt));
         }
+
+        return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
+    }
+
+    private CompletableFuture<ParsedResponse> executeRequestModelInternalAfterPermit(
+            Agent tempAgent, List<Message> messagesWithUser, ModelRequestOptions options,
+            Instance instance, InstanceLimiter limiter) {
 
         logger.info("-> REQUEST MODEL | Model: {} | Instance: {} | Messages: {}",
                 tempAgent.getModel(), instance.getId(), messagesWithUser.size());
@@ -838,7 +898,21 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
-        // Try to acquire permit
+        // Rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> executeRequestAfterRateLimit(agent, userMessage, history, attempt, instance, limiter));
+        }
+
+        return executeRequestAfterRateLimit(agent, userMessage, history, attempt, instance, limiter);
+    }
+
+    private CompletableFuture<ParsedResponse> executeRequestAfterRateLimit(
+            Agent agent, String userMessage, List<Message> history, int attempt,
+            Instance instance, InstanceLimiter limiter) {
+
+        // Try to acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
             logger.debug("⏳ No permit for {} - waiting", instance.getId());
             return delayAsync(50)
@@ -1251,7 +1325,7 @@ public class UnifiedRequestService {
 
     private InstanceLimiter getLimiterForInstance(Instance instance) {
         return instanceLimiters.computeIfAbsent(instance.getId(),
-                id -> new InstanceLimiter(id, config.getMaxConcurrentStreamsPerInstance()));
+                id -> new InstanceLimiter(id, config.getMaxConcurrentStreamsPerInstance(), config.getRequestsPerSecond()));
     }
 
     private CompletableFuture<Void> delayAsync(long millis) {
