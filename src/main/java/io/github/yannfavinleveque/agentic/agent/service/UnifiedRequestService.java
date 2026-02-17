@@ -290,22 +290,17 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
-        // Rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> {
-                        if (!limiter.tryAcquire()) {
-                            return delayAsync(50)
-                                    .thenCompose(v2 -> executeRequestAgentWithImages(agent, messagesWithUser, attempt));
-                        }
-                        return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
-                    });
-        }
-
+        // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
             return delayAsync(50)
                     .thenCompose(v -> executeRequestAgentWithImages(agent, messagesWithUser, attempt));
+        }
+
+        // Then rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter));
         }
 
         return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
@@ -656,22 +651,17 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
-        // Rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> {
-                        if (!limiter.tryAcquire()) {
-                            return delayAsync(50)
-                                    .thenCompose(v2 -> executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt));
-                        }
-                        return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
-                    });
-        }
-
+        // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
             return delayAsync(50)
                     .thenCompose(v -> executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt));
+        }
+
+        // Then rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter));
         }
 
         return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
@@ -898,26 +888,26 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstance(instance);
 
-        // Rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> executeRequestAfterRateLimit(agent, userMessage, history, attempt, instance, limiter));
-        }
-
-        return executeRequestAfterRateLimit(agent, userMessage, history, attempt, instance, limiter);
-    }
-
-    private CompletableFuture<ParsedResponse> executeRequestAfterRateLimit(
-            Agent agent, String userMessage, List<Message> history, int attempt,
-            Instance instance, InstanceLimiter limiter) {
-
-        // Try to acquire concurrent stream permit
+        // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
             logger.debug("⏳ No permit for {} - waiting", instance.getId());
             return delayAsync(50)
                     .thenCompose(v -> executeRequest(agent, userMessage, history, attempt));
         }
+
+        // Then rate limit: non-blocking wait if too soon since last request on this instance
+        long rateDelay = limiter.acquireRateSlot();
+        if (rateDelay > 0) {
+            return delayAsync(rateDelay)
+                    .thenCompose(v -> executeRequestAfterPermit(agent, userMessage, history, instance, limiter));
+        }
+
+        return executeRequestAfterPermit(agent, userMessage, history, instance, limiter);
+    }
+
+    private CompletableFuture<ParsedResponse> executeRequestAfterPermit(
+            Agent agent, String userMessage, List<Message> history,
+            Instance instance, InstanceLimiter limiter) {
 
         logger.info("→ REQUEST START [V2] | Agent: {} | Model: {} | Instance: {}",
                 agent.getName(), agent.getModel(), instance.getId());
@@ -1359,9 +1349,6 @@ public class UnifiedRequestService {
     private long calculateDelay(Throwable e, int attempt) {
         String message = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
 
-        if (message.contains("429") || message.contains("rate_limit")) {
-            return config.getRateLimitDelayMs();
-        }
         if (message.contains("502")) {
             return config.getError502DelayMs();
         }
@@ -1604,7 +1591,7 @@ public class UnifiedRequestService {
             } catch (Exception e) {
                 return handleChatCompletionException(model, messages, temperature, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     @SuppressWarnings("unchecked")
@@ -1646,7 +1633,7 @@ public class UnifiedRequestService {
                 return handleChatCompletionStructuredException(model, messages, temperature,
                         resultClass, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     private String executeChatCompletionOpenAI(String model, List<ChatMessage> messages,
@@ -1937,7 +1924,7 @@ public class UnifiedRequestService {
             } catch (Exception e) {
                 return handleEmbeddingException(text, model, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     private CompletableFuture<List<float[]>> attemptEmbeddingsBatch(List<String> texts, String model, int attemptNumber) {
@@ -1947,7 +1934,7 @@ public class UnifiedRequestService {
             } catch (Exception e) {
                 return handleEmbeddingsBatchException(texts, model, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     private float[] executeEmbeddingRequest(String text, String model) throws Exception {
@@ -2117,7 +2104,7 @@ public class UnifiedRequestService {
             } catch (Exception e) {
                 return handleImageGenerationException(prompt, model, size, quality, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     private CompletableFuture<String> attemptImageEdit(String imageBase64, String prompt, String model,
@@ -2128,7 +2115,7 @@ public class UnifiedRequestService {
             } catch (Exception e) {
                 return handleImageEditException(imageBase64, prompt, model, size, quality, attemptNumber, e);
             }
-        });
+        }, httpHelper.getExecutor());
     }
 
     private String executeImageGenerationRequest(String prompt, String model, Size size, Quality quality)

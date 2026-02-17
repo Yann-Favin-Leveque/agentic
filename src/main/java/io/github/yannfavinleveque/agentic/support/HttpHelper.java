@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Simple HTTP helper for making API calls using ProviderConfig. NOTE: Concurrency control has been
@@ -36,21 +38,29 @@ public class HttpHelper {
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final ExecutorService httpExecutor;
 
     /**
-     * Creates HttpHelper.
+     * Creates HttpHelper with a dedicated thread pool for HTTP async operations.
+     * This avoids exhausting ForkJoinPool.commonPool() under high concurrency.
      *
      * @param maxStreamsPerInstance Ignored - kept for API compatibility. Concurrency is now managed at
      *                              AgentRequestService level.
      */
     public HttpHelper(int maxStreamsPerInstance) {
+        this.httpExecutor = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "agentic-http-" + Thread.activeCount());
+            t.setDaemon(true);
+            return t;
+        });
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .version(HttpClient.Version.HTTP_2)
+                .executor(httpExecutor)
                 .build();
         this.objectMapper = new ObjectMapper()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        logger.info("HttpHelper initialized (concurrency control at AgentRequestService level)");
+        logger.info("HttpHelper initialized with dedicated thread pool (concurrency control at AgentRequestService level)");
     }
 
     /**
@@ -59,6 +69,11 @@ public class HttpHelper {
     public HttpHelper(HttpClient httpClient, ObjectMapper objectMapper) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
+        this.httpExecutor = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "agentic-http-test-" + Thread.activeCount());
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     // ==================== HTTP METHODS ====================
@@ -454,6 +469,14 @@ public class HttpHelper {
 
     public ObjectMapper getObjectMapper() {
         return objectMapper;
+    }
+
+    /**
+     * Returns the dedicated executor used by this HttpHelper.
+     * Other components can use this to avoid ForkJoinPool.commonPool() exhaustion.
+     */
+    public ExecutorService getExecutor() {
+        return httpExecutor;
     }
 
     private byte[] buildMultipartBodyBase64(String boundary, String imageBase64, Map<String, String> formFields)

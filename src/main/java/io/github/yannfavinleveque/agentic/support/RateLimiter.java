@@ -57,7 +57,7 @@ public class RateLimiter {
      * Asynchronously waits for a token and consumes it (non-blocking!).
      * Returns a CompletableFuture that completes when token is acquired.
      */
-    public java.util.concurrent.CompletableFuture<Void> consumeAsync() {
+    public java.util.concurrent.CompletableFuture<Void> consumeAsync(java.util.concurrent.ExecutorService executor) {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
                 bucket.asBlocking().consume(1);
@@ -66,7 +66,7 @@ public class RateLimiter {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Interrupted while waiting for rate limit token", e);
             }
-        });
+        }, executor);
     }
 
 }
