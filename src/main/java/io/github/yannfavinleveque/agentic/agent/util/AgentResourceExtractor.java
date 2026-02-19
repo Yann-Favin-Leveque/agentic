@@ -37,8 +37,15 @@ public class AgentResourceExtractor {
             return extractedAgentDirectory;
         }
 
-        // Create temporary directory for agents
+        // Create temporary directory for agents (clean old files first)
         Path tempDir = Paths.get(System.getProperty("java.io.tmpdir"), TEMP_AGENTS_FOLDER);
+        if (Files.exists(tempDir)) {
+            try (Stream<Path> oldFiles = Files.list(tempDir)) {
+                oldFiles.filter(p -> p.toString().endsWith(".json")).forEach(p -> {
+                    try { Files.delete(p); } catch (IOException ignored) {}
+                });
+            }
+        }
         Files.createDirectories(tempDir);
 
         logger.info("📦 Extracting agent JSON files from JAR to: {}", tempDir);

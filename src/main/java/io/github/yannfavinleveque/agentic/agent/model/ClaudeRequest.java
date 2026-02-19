@@ -86,6 +86,13 @@ public class ClaudeRequest {
     private Object toolChoice;
 
     /**
+     * Extended thinking configuration (optional).
+     * When enabled, Claude will use internal reasoning before responding.
+     * Format: {"type": "enabled", "budget_tokens": 1024}
+     */
+    private Map<String, Object> thinking;
+
+    /**
      * Represents a single message in Claude conversation.
      * Content can be a string (text-only) or a list of content blocks (multimodal).
      */

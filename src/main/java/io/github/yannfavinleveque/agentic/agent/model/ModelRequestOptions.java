@@ -110,6 +110,11 @@ public class ModelRequestOptions {
     private java.util.List<Message> history;
 
     /**
+     * Reasoning effort level: null/"none" = disabled, "low"/"medium"/"high", "enabled" = default level.
+     */
+    private String reasoningEffort;
+
+    /**
      * Conversation ID for automatic history management.
      * When set, the history is automatically retrieved from ConversationManager
      * and updated after each request. Use {@link io.github.yannfavinleveque.agentic.agent.service.AgentService#createConversation()}

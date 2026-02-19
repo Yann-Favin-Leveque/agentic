@@ -354,6 +354,9 @@ public class UnifiedRequestService {
 
         requestBody.put("max_output_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
 
+        // Reasoning configuration
+        addOpenAIReasoningConfig(requestBody, agent.getReasoningEffort());
+
         List<Object> tools = buildOpenAIToolsForRequest(agent);
         if (tools != null && !tools.isEmpty()) {
             requestBody.put("tools", tools);
@@ -421,7 +424,8 @@ public class UnifiedRequestService {
                 agent.getTemperature(),
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
                 resultClass,
-                tools).thenApply(this::parseClaudeResponse);
+                tools,
+                agent.getReasoningEffort()).thenApply(this::parseClaudeResponse);
     }
 
     /**
@@ -459,6 +463,9 @@ public class UnifiedRequestService {
                         .build();
                 functionCalls.add(call);
                 logger.debug("Parsed Claude tool_use: {} with input: {}", content.getName(), argsJson);
+            } else if ("thinking".equals(content.getType())) {
+                // Claude extended thinking block — skip for output, just log
+                logger.debug("Claude response contains thinking block (skipped for output)");
             }
         }
 
@@ -719,6 +726,9 @@ public class UnifiedRequestService {
         Integer maxTokens = (options != null && options.getMaxTokens() != null) ? options.getMaxTokens() : 4096;
         requestBody.put("max_output_tokens", maxTokens);
 
+        // Reasoning configuration
+        addOpenAIReasoningConfig(requestBody, options != null ? options.getReasoningEffort() : null);
+
         List<Object> tools = buildToolsForRequestModel(options);
         if (tools != null && !tools.isEmpty()) {
             requestBody.put("tools", tools);
@@ -764,7 +774,8 @@ public class UnifiedRequestService {
                 temperature,
                 maxTokens,
                 resultClass,
-                null).thenApply(this::parseClaudeResponse);
+                null,
+                options != null ? options.getReasoningEffort() : null).thenApply(this::parseClaudeResponse);
     }
 
     @SuppressWarnings("unchecked")
@@ -909,8 +920,10 @@ public class UnifiedRequestService {
             Agent agent, String userMessage, List<Message> history,
             Instance instance, InstanceLimiter limiter) {
 
-        logger.info("→ REQUEST START [V2] | Agent: {} | Model: {} | Instance: {}",
-                agent.getName(), agent.getModel(), instance.getId());
+        String msgPreview = userMessage != null && userMessage.length() > 200
+                ? userMessage.substring(0, 200) + "..." : userMessage;
+        logger.info("→ REQUEST START [V2] | Agent: {} | Model: {} | Instance: {} | Input: {}",
+                agent.getName(), agent.getModel(), instance.getId(), msgPreview);
 
         CompletableFuture<ParsedResponse> requestFuture;
 
@@ -978,6 +991,9 @@ public class UnifiedRequestService {
             requestBody.put("max_output_tokens", 4096);
         }
 
+        // Reasoning configuration
+        addOpenAIReasoningConfig(requestBody, agent.getReasoningEffort());
+
         // Add tools if configured
         List<Object> tools = buildOpenAIToolsForRequest(agent);
         if (tools != null && !tools.isEmpty()) {
@@ -1015,6 +1031,26 @@ public class UnifiedRequestService {
                 ProviderConfig.Endpoint.RESPONSES,
                 agent.getModel(),
                 requestBody).thenApply(this::extractResponsesContentParsed);
+    }
+
+    /**
+     * Adds reasoning configuration to an OpenAI Responses API request body.
+     * If null or "none" → don't send reasoning param (model default, no reasoning for non-reasoning models).
+     * "enabled" → "medium". "low"/"medium"/"high" → sent as-is.
+     *
+     * @param requestBody     The request body map to add reasoning config to
+     * @param reasoningEffort The reasoning effort level (null, "none", "low", "medium", "high", "enabled")
+     */
+    private void addOpenAIReasoningConfig(Map<String, Object> requestBody, String reasoningEffort) {
+        // null or blank → don't send reasoning param at all → model uses its default
+        if (reasoningEffort == null || reasoningEffort.isBlank()) {
+            return;
+        }
+        // "enabled" maps to "medium", everything else ("none", "low", "medium", "high") sent as-is
+        String effort = "enabled".equalsIgnoreCase(reasoningEffort) ? "medium" : reasoningEffort.toLowerCase();
+        Map<String, Object> reasoning = new HashMap<>();
+        reasoning.put("effort", effort);
+        requestBody.put("reasoning", reasoning);
     }
 
     /**
@@ -1061,6 +1097,7 @@ public class UnifiedRequestService {
 
             StringBuilder textContent = new StringBuilder();
             List<FunctionCall> functionCalls = new ArrayList<>();
+            boolean hasReasoning = false;
 
             // Process all output items
             for (Map<String, Object> item : output) {
@@ -1093,6 +1130,10 @@ public class UnifiedRequestService {
                             .build();
                     functionCalls.add(call);
                     logger.debug("Parsed function call: {} with args: {}", name, args);
+                } else if ("reasoning".equals(type)) {
+                    // Reasoning block — model used reasoning tokens. Skip content, just flag it.
+                    hasReasoning = true;
+                    logger.debug("Response contains reasoning block (skipped for output)");
                 }
             }
 
@@ -1123,10 +1164,16 @@ public class UnifiedRequestService {
             List<Object> outputTypes = output.stream()
                     .map(o -> o.get("type"))
                     .collect(java.util.stream.Collectors.toList());
-            logger.warn("Could not extract text from response. Output types: {}", outputTypes);
+
+            if (hasReasoning) {
+                logger.error("Model returned only reasoning with no text output. "
+                        + "The model likely exhausted its token budget on reasoning. "
+                        + "Consider setting reasoningEffort to 'none' or increasing maxTokens.");
+            }
 
             throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED,
-                    "No text content in response. Output contains: " + outputTypes);
+                    "No text content in response. Output contains: " + outputTypes
+                    + (hasReasoning ? " (model used all tokens for reasoning, none left for output)" : ""));
 
         } catch (Exception e) {
             if (e instanceof AgentException) {
@@ -1246,7 +1293,8 @@ public class UnifiedRequestService {
                 agent.getTemperature(),
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
                 resultClass,
-                tools).thenApply(this::parseClaudeResponse);
+                tools,
+                agent.getReasoningEffort()).thenApply(this::parseClaudeResponse);
     }
 
     // ==================== RESPONSE HANDLING ====================

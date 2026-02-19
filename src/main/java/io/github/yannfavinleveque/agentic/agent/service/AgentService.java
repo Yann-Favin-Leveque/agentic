@@ -109,14 +109,14 @@ public class AgentService {
         this.claudeAdapter = new ClaudeAdapter(httpHelper);
         this.batchManager = new BatchManager(httpHelper, instanceRouter);
 
-        // Initialize agent manager and load definitions
-        this.agentManager = new AgentManager(config, httpHelper, instanceRouter, objectMapper);
-        if (config.getAgentJsonFolderPath() != null && !config.getAgentJsonFolderPath().isEmpty()) {
+        // Initialize agent manager and load definitions (use this.config which has the resolved path)
+        this.agentManager = new AgentManager(this.config, httpHelper, instanceRouter, objectMapper);
+        if (this.config.getAgentJsonFolderPath() != null && !this.config.getAgentJsonFolderPath().isEmpty()) {
             agentManager.loadAgentDefinitions();
         }
 
         // Initialize unified stateless request service (handles agent requests, embeddings, images)
-        this.unifiedRequestService = new UnifiedRequestService(config, httpHelper, instanceRouter,
+        this.unifiedRequestService = new UnifiedRequestService(this.config, httpHelper, instanceRouter,
                 claudeAdapter, objectMapper, agentManager);
 
         // Initialize conversation manager for multi-turn conversations

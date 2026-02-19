@@ -188,4 +188,18 @@ public class AgentDefinition {
     @JsonAlias("max_tool_token_output")
     private Integer maxToolTokenOutput;
 
+    /**
+     * Reasoning effort level for the agent.
+     * Controls whether the model uses reasoning/thinking before responding.
+     * <ul>
+     *   <li>null → default to "none" (no reasoning, backward compatible)</li>
+     *   <li>"none" → explicitly disable reasoning</li>
+     *   <li>"low", "medium", "high" → OpenAI: sent as reasoning.effort; Claude: enables thinking</li>
+     *   <li>"enabled" → OpenAI: maps to "medium"; Claude: enables thinking</li>
+     * </ul>
+     */
+    @JsonProperty("reasoningEffort")
+    @JsonAlias("reasoning_effort")
+    private String reasoningEffort;
+
 }

@@ -167,4 +167,11 @@ public class Agent {
      */
     private Integer maxToolTokenOutput;
 
+    /**
+     * Reasoning effort level for the agent.
+     * null or "none" = no reasoning. "low"/"medium"/"high" = reasoning with effort level.
+     * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).
+     */
+    private String reasoningEffort;
+
 }

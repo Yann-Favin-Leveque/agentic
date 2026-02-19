@@ -73,7 +73,7 @@ public class ClaudeAdapter {
             List<ClaudeRequest.ClaudeMessage> messages,
             Double temperature, Integer maxTokens,
             Class<?> resultClass) {
-        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, null);
+        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, null, null);
     }
 
     /**
@@ -96,13 +96,56 @@ public class ClaudeAdapter {
             Double temperature, Integer maxTokens,
             Class<?> resultClass,
             List<ClaudeRequest.ClaudeTool> tools) {
+        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, tools, null);
+    }
+
+    /**
+     * Calls Claude API with tools and reasoning support - FULLY ASYNC.
+     *
+     * @param instance        Instance to call
+     * @param model           Model name
+     * @param systemPrompt    System prompt (optional)
+     * @param messages        Conversation messages
+     * @param temperature     Temperature (optional)
+     * @param maxTokens       Max tokens (optional, defaults to 4096)
+     * @param resultClass     Result class for structured output (optional)
+     * @param tools           List of tools available to the model (optional)
+     * @param reasoningEffort Reasoning effort: null/"none" = disabled, "enabled"/"low"/"medium"/"high" = enable thinking
+     * @return CompletableFuture with Claude response
+     */
+    public java.util.concurrent.CompletableFuture<ClaudeResponse> callClaudeAsync(
+            Instance instance, String model, String systemPrompt,
+            List<ClaudeRequest.ClaudeMessage> messages,
+            Double temperature, Integer maxTokens,
+            Class<?> resultClass,
+            List<ClaudeRequest.ClaudeTool> tools,
+            String reasoningEffort) {
+
+        int resolvedMaxTokens = maxTokens != null ? maxTokens : 4096;
 
         ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
                 .model(model)
-                .maxTokens(maxTokens != null ? maxTokens : 4096)
+                .maxTokens(resolvedMaxTokens)
                 .system(systemPrompt)
                 .messages(messages)
                 .temperature(temperature);
+
+        // Configure thinking/reasoning if enabled
+        // Claude constraints: budget_tokens >= 1024, max_tokens > budget_tokens
+        if (reasoningEffort != null && !reasoningEffort.isBlank() && !"none".equalsIgnoreCase(reasoningEffort)) {
+            int budgetTokens = Math.max(1024, resolvedMaxTokens);
+            // max_tokens must be strictly greater than budget_tokens
+            int totalMaxTokens = budgetTokens + resolvedMaxTokens;
+            requestBuilder.maxTokens(totalMaxTokens);
+
+            Map<String, Object> thinking = new HashMap<>();
+            thinking.put("type", "enabled");
+            thinking.put("budget_tokens", budgetTokens);
+            requestBuilder.thinking(thinking);
+            // When thinking is enabled, temperature must not be set (Claude requirement)
+            requestBuilder.temperature(null);
+            logger.debug("Enabled Claude thinking: budget_tokens={}, max_tokens={}", budgetTokens, totalMaxTokens);
+        }
 
         // Add tools if provided
         if (tools != null && !tools.isEmpty()) {

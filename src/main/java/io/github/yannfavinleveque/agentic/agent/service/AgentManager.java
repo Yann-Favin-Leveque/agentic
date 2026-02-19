@@ -258,6 +258,7 @@ public class AgentManager {
                     .autonomous(definition.getAutonomous() != null ? definition.getAutonomous() : false)
                     .maxIterations(definition.getMaxIterations() != null ? definition.getMaxIterations() : 25)
                     .maxToolTokenOutput(definition.getMaxToolTokenOutput())
+                    .reasoningEffort(definition.getReasoningEffort())
                     .build();
 
             agents.put(agent.getId(), agent);
