@@ -9,10 +9,13 @@ import io.github.yannfavinleveque.agentic.common.ResponseFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -92,7 +95,7 @@ public class JsonSchemaGenerator {
         ObjectNode properties = mapper.createObjectNode();
         List<String> required = new ArrayList<>();
 
-        Field[] fields = clazz.getDeclaredFields();
+        List<Field> fields = getAllFields(clazz);
         for (Field field : fields) {
             if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 if (field.getType() == Object.class) {
@@ -232,10 +235,25 @@ public class JsonSchemaGenerator {
                 !clazz.getPackage().getName().startsWith("java.");
     }
 
+    /**
+     * Collects all declared fields from a class and its parent hierarchy,
+     * stopping at AgentResult (exclusive) or Object. This fixes the inheritance bug
+     * where getDeclaredFields() only returns fields from the leaf class.
+     */
+    private static List<Field> getAllFields(Class<?> clazz) {
+        List<Field> allFields = new ArrayList<>();
+        Class<?> current = clazz;
+        while (current != null && current != AgentResult.class && current != Object.class) {
+            allFields.addAll(Arrays.asList(current.getDeclaredFields()));
+            current = current.getSuperclass();
+        }
+        return allFields;
+    }
+
     public static boolean canGenerateSchema(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            return clazz.getDeclaredFields().length > 0;
+            return !getAllFields(clazz).isEmpty();
         } catch (ClassNotFoundException e) {
             return false;
         }
@@ -304,7 +322,7 @@ public class JsonSchemaGenerator {
 
             // Find Map fields in the result class and fix them
             boolean modified = false;
-            for (Field field : resultClass.getDeclaredFields()) {
+            for (Field field : getAllFields(resultClass)) {
                 if (Map.class.isAssignableFrom(field.getType())) {
                     String fieldName = field.getName();
                     Object value = responseMap.get(fieldName);
