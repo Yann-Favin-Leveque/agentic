@@ -1,7 +1,10 @@
 name: Release to Maven Central
-run-name: Release run ${{ github.run_number }}
+run-name: Release ${{ github.ref_name }}
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   release:
