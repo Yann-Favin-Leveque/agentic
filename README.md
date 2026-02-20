@@ -65,13 +65,25 @@ Then add to your project's `pom.xml`:
 
 ```xml
 <dependency>
-    <groupId>io.github.Yann-Favin-Leveque</groupId>
+    <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.1</version>
+    <version>1.6.8</version>
 </dependency>
 ```
 
-### Option 2: GitHub Packages
+### Option 2: Maven Central
+
+The library is published on Maven Central. No extra repository configuration needed:
+
+```xml
+<dependency>
+    <groupId>io.github.yann-favin-leveque</groupId>
+    <artifactId>agentic-helper</artifactId>
+    <version>1.6.8</version>
+</dependency>
+```
+
+### Option 3: GitHub Packages
 
 Add the repository to your `pom.xml`:
 
@@ -84,9 +96,9 @@ Add the repository to your `pom.xml`:
 </repositories>
 
 <dependency>
-    <groupId>io.github.Yann-Favin-Leveque</groupId>
+    <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.1</version>
+    <version>1.6.8</version>
 </dependency>
 ```
 
