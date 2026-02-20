@@ -20,3 +20,4 @@ src/demo/resources/response.mp3
 replit.nix
 .claude/settings.local.json
 .claude/worker_prompts/
+*.asc
