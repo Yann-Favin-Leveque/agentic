@@ -9,6 +9,7 @@ import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionConfig;
 import io.github.yannfavinleveque.agentic.agent.model.Message;
 import io.github.yannfavinleveque.agentic.agent.model.ToolExecutor;
+import io.github.yannfavinleveque.agentic.common.TokenUsage;
 import io.github.yannfavinleveque.agentic.support.JsonSchemaGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,7 +85,10 @@ public class AutonomousAgentRunner {
         logger.info("Starting autonomous loop for agent '{}' (virtualId={}, maxIterations={}, conversation={})",
                 agent.getId(), virtualAgent.getId(), maxIterations, convId);
 
-        return executeLoop(virtualAgent, agent, convId, userMessage, effectiveExecutor, 0, maxIterations)
+        // Accumulate token usage across all iterations
+        TokenUsage cumulativeUsage = new TokenUsage();
+
+        return executeLoop(virtualAgent, agent, convId, userMessage, effectiveExecutor, 0, maxIterations, cumulativeUsage)
                 .whenComplete((result, error) -> {
                     // Cleanup: unregister virtual agent
                     agentManager.removeAgent(virtualAgent.getId());
@@ -98,8 +102,13 @@ public class AutonomousAgentRunner {
                         logger.error("Autonomous loop failed for agent '{}': {}",
                                 agent.getId(), error.getMessage());
                     } else {
-                        logger.info("Autonomous loop completed for agent '{}' with result type: {}",
-                                agent.getId(), result.getClass().getSimpleName());
+                        // Set cumulative usage on the final result
+                        result.setUsage(cumulativeUsage);
+                        logger.info("Autonomous loop completed for agent '{}' with result type: {} " +
+                                        "(total tokens: {} in / {} out, estimated cost: ${} USD)",
+                                agent.getId(), result.getClass().getSimpleName(),
+                                cumulativeUsage.getInputTokens(), cumulativeUsage.getOutputTokens(),
+                                cumulativeUsage.getEstimatedCostUsd());
                     }
                 });
     }
@@ -235,7 +244,8 @@ public class AutonomousAgentRunner {
     private CompletableFuture<AgentResult> executeLoop(Agent virtualAgent, Agent originalAgent,
                                                        String convId, String userMessage,
                                                        ToolExecutor toolExecutor,
-                                                       int iteration, int maxIterations) {
+                                                       int iteration, int maxIterations,
+                                                       TokenUsage cumulativeUsage) {
         if (iteration >= maxIterations) {
             return CompletableFuture.failedFuture(new AgentException(
                     AgentException.ErrorCode.REQUEST_FAILED,
@@ -275,9 +285,13 @@ public class AutonomousAgentRunner {
         }
 
         return requestFuture
-                .thenCompose(result -> handleResponse(
-                        result, virtualAgent, originalAgent, convId, userMessage,
-                        toolExecutor, iteration, maxIterations));
+                .thenCompose(result -> {
+                    // Accumulate token usage from this iteration
+                    cumulativeUsage.accumulate(result.getUsage());
+                    return handleResponse(
+                            result, virtualAgent, originalAgent, convId, userMessage,
+                            toolExecutor, iteration, maxIterations, cumulativeUsage);
+                });
     }
 
     /**
@@ -287,10 +301,11 @@ public class AutonomousAgentRunner {
                                                           Agent virtualAgent, Agent originalAgent,
                                                           String convId, String userMessage,
                                                           ToolExecutor toolExecutor,
-                                                          int iteration, int maxIterations) {
+                                                          int iteration, int maxIterations,
+                                                          TokenUsage cumulativeUsage) {
         if (result.hasFunctionCalls()) {
             return handleFunctionCalls(result, virtualAgent, originalAgent, convId, userMessage,
-                    toolExecutor, iteration, maxIterations);
+                    toolExecutor, iteration, maxIterations, cumulativeUsage);
         }
 
         // No function calls - agent is "thinking aloud" or returned structured output as text
@@ -311,7 +326,7 @@ public class AutonomousAgentRunner {
         // Nudge: requestAgent already stored the assistant message in conversation.
         // We just need to continue the loop - the next iteration will send a continuation message.
         return executeLoop(virtualAgent, originalAgent, convId, userMessage,
-                toolExecutor, iteration + 1, maxIterations);
+                toolExecutor, iteration + 1, maxIterations, cumulativeUsage);
     }
 
     /**
@@ -321,7 +336,8 @@ public class AutonomousAgentRunner {
                                                                Agent virtualAgent, Agent originalAgent,
                                                                String convId, String userMessage,
                                                                ToolExecutor toolExecutor,
-                                                               int iteration, int maxIterations) {
+                                                               int iteration, int maxIterations,
+                                                               TokenUsage cumulativeUsage) {
         List<FunctionCall> calls = result.getFunctionCalls();
 
         // requestAgent already stored the assistant message (with tool call summary) in conversation.
@@ -364,7 +380,7 @@ public class AutonomousAgentRunner {
 
         // Continue loop - tool results are in conversation, next requestAgent will pick them up
         return executeLoop(virtualAgent, originalAgent, convId, userMessage,
-                toolExecutor, iteration + 1, maxIterations);
+                toolExecutor, iteration + 1, maxIterations, cumulativeUsage);
     }
 
     private String trimToolOutput(String output, Integer maxTokens, String toolName) {

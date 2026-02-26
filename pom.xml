@@ -6,7 +6,7 @@
 
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.7.0</version>
+    <version>1.7.1</version>
   <packaging>jar</packaging>
 
   <name>agentic-helper</name>
