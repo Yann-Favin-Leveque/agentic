@@ -2,6 +2,7 @@ package io.github.yannfavinleveque.agentic.agent.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yannfavinleveque.agentic.common.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +68,14 @@ public abstract class AgentResult {
     private List<FunctionCall> functionCalls = new ArrayList<>();
 
     /**
+     * Token usage and estimated cost for this request.
+     * Contains input/output token counts, model name, and estimated cost in USD.
+     * Cost is {@code null} when the model is not in the pricing table.
+     */
+    @JsonIgnore
+    private TokenUsage usage;
+
+    /**
      * Gets the content/response from the agent. Subclasses may override for custom behavior.
      * Default implementation returns toString().
      *
@@ -104,6 +113,26 @@ public abstract class AgentResult {
     @JsonIgnore
     public boolean hasFunctionCalls() {
         return functionCalls != null && !functionCalls.isEmpty();
+    }
+
+    /**
+     * Returns token usage and estimated cost for this request, or {@code null} if not available.
+     *
+     * @return Token usage with input/output counts and estimated cost
+     */
+    @JsonIgnore
+    public TokenUsage getUsage() {
+        return usage;
+    }
+
+    /**
+     * Sets the token usage on this result.
+     *
+     * @param usage Token usage from the API response
+     */
+    @JsonIgnore
+    public void setUsage(TokenUsage usage) {
+        this.usage = usage;
     }
 
     /**

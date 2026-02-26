@@ -16,7 +16,9 @@ import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
 import io.github.yannfavinleveque.agentic.agent.model.Message;
 import io.github.yannfavinleveque.agentic.agent.model.ModelRequestOptions;
+import io.github.yannfavinleveque.agentic.common.ModelPricing;
 import io.github.yannfavinleveque.agentic.common.ResponseFormat;
+import io.github.yannfavinleveque.agentic.common.TokenUsage;
 import io.github.yannfavinleveque.agentic.domain.chat.Chat;
 import io.github.yannfavinleveque.agentic.domain.chat.ChatMessage;
 import io.github.yannfavinleveque.agentic.domain.chat.ChatRequest;
@@ -140,17 +142,26 @@ public class UnifiedRequestService {
     private static class ParsedResponse {
         private final String textContent;
         private final List<FunctionCall> functionCalls;
+        private final TokenUsage tokenUsage;
 
         static ParsedResponse ofText(String text) {
-            return new ParsedResponse(text, Collections.emptyList());
+            return new ParsedResponse(text, Collections.emptyList(), null);
+        }
+
+        static ParsedResponse ofText(String text, TokenUsage tokenUsage) {
+            return new ParsedResponse(text, Collections.emptyList(), tokenUsage);
         }
 
         static ParsedResponse ofFunctionCalls(List<FunctionCall> calls) {
-            return new ParsedResponse(null, calls);
+            return new ParsedResponse(null, calls, null);
         }
 
         static ParsedResponse of(String text, List<FunctionCall> calls) {
-            return new ParsedResponse(text, calls != null ? calls : Collections.emptyList());
+            return new ParsedResponse(text, calls != null ? calls : Collections.emptyList(), null);
+        }
+
+        static ParsedResponse of(String text, List<FunctionCall> calls, TokenUsage tokenUsage) {
+            return new ParsedResponse(text, calls != null ? calls : Collections.emptyList(), tokenUsage);
         }
 
         boolean hasFunctionCalls() {
@@ -324,8 +335,10 @@ public class UnifiedRequestService {
                 .whenComplete((response, error) -> {
                     limiter.release();
                     if (error == null) {
-                        logger.info("<- RESPONSE AGENT [VISION] | Agent: {} | Response: {}",
-                                agent.getName(), response);
+                        String usageLog = response.getTokenUsage() != null
+                                ? " | " + ModelPricing.formatForLog(response.getTokenUsage()) : "";
+                        logger.info("<- RESPONSE AGENT [VISION] | Agent: {}{} | Response: {}",
+                                agent.getName(), usageLog, response);
                     } else {
                         logger.error("<- ERROR AGENT [VISION] | Agent: {} | Error: {}",
                                 agent.getName(), error.getMessage());
@@ -469,12 +482,21 @@ public class UnifiedRequestService {
             }
         }
 
-        if (!functionCalls.isEmpty()) {
-            String text = textContent.length() > 0 ? textContent.toString() : null;
-            return ParsedResponse.of(text, functionCalls);
+        // Extract token usage and estimated cost
+        TokenUsage tokenUsage = null;
+        if (response.getUsage() != null) {
+            tokenUsage = ModelPricing.calculate(
+                    response.getModel(),
+                    response.getUsage().getInputTokens(),
+                    response.getUsage().getOutputTokens());
         }
 
-        return ParsedResponse.ofText(textContent.toString());
+        if (!functionCalls.isEmpty()) {
+            String text = textContent.length() > 0 ? textContent.toString() : null;
+            return ParsedResponse.of(text, functionCalls, tokenUsage);
+        }
+
+        return ParsedResponse.ofText(textContent.toString(), tokenUsage);
     }
 
     // ==================== REQUEST MODEL (DIRECT MODEL CALLS) ====================
@@ -693,8 +715,10 @@ public class UnifiedRequestService {
                 .whenComplete((response, error) -> {
                     limiter.release();
                     if (error == null) {
-                        logger.info("<- RESPONSE MODEL | Model: {} | Response: {}",
-                                tempAgent.getModel(), response);
+                        String usageLog = response.getTokenUsage() != null
+                                ? " | " + ModelPricing.formatForLog(response.getTokenUsage()) : "";
+                        logger.info("<- RESPONSE MODEL | Model: {}{} | Response: {}",
+                                tempAgent.getModel(), usageLog, response);
                     } else {
                         logger.error("<- ERROR MODEL | Model: {} | Error: {}",
                                 tempAgent.getModel(), error.getMessage());
@@ -834,19 +858,26 @@ public class UnifiedRequestService {
 
     private CompletableFuture<AgentResult> deserializeModelResponse(ParsedResponse parsed, ModelRequestOptions options) {
         try {
+            AgentResult result;
+
             // If there are function calls, return them in DefaultResult
             if (parsed.hasFunctionCalls()) {
-                return CompletableFuture.completedFuture(
-                        new DefaultResult(parsed.getTextContent(), parsed.getFunctionCalls()));
+                result = new DefaultResult(parsed.getTextContent(), parsed.getFunctionCalls());
+            } else {
+                String jsonResponse = parsed.getTextContent();
+
+                if (options == null || options.getResultClass() == null) {
+                    result = new DefaultResult(jsonResponse);
+                } else {
+                    result = (AgentResult) objectMapper.readValue(jsonResponse, options.getResultClass());
+                }
             }
 
-            String jsonResponse = parsed.getTextContent();
-
-            if (options == null || options.getResultClass() == null) {
-                return CompletableFuture.completedFuture(new DefaultResult(jsonResponse));
+            // Propagate token usage to result
+            if (parsed.getTokenUsage() != null) {
+                result.setUsage(parsed.getTokenUsage());
             }
 
-            AgentResult result = (AgentResult) objectMapper.readValue(jsonResponse, options.getResultClass());
             return CompletableFuture.completedFuture(result);
 
         } catch (Exception e) {
@@ -937,8 +968,10 @@ public class UnifiedRequestService {
                 .whenComplete((response, error) -> {
                     limiter.release();
                     if (error == null) {
-                        logger.info("← RESPONSE END [V2] | Agent: {} | Response: {}",
-                                agent.getName(), response);
+                        String usageLog = response.getTokenUsage() != null
+                                ? " | " + ModelPricing.formatForLog(response.getTokenUsage()) : "";
+                        logger.info("← RESPONSE END [V2] | Agent: {}{} | Response: {}",
+                                agent.getName(), usageLog, response);
                     } else {
                         logger.error("← RESPONSE ERROR [V2] | Agent: {} | Error: {}",
                                 agent.getName(), error.getMessage());
@@ -1137,15 +1170,27 @@ public class UnifiedRequestService {
                 }
             }
 
+            // Extract token usage and estimated cost
+            TokenUsage tokenUsage = null;
+            Map<String, Object> usageMap = (Map<String, Object>) response.get("usage");
+            if (usageMap != null) {
+                Integer inputTokens = usageMap.get("input_tokens") instanceof Number
+                        ? ((Number) usageMap.get("input_tokens")).intValue() : null;
+                Integer outputTokens = usageMap.get("output_tokens") instanceof Number
+                        ? ((Number) usageMap.get("output_tokens")).intValue() : null;
+                tokenUsage = ModelPricing.calculate(
+                        (String) response.get("model"), inputTokens, outputTokens);
+            }
+
             // If we have function calls, return them (with or without text)
             if (!functionCalls.isEmpty()) {
                 String text = textContent.length() > 0 ? textContent.toString() : null;
-                return ParsedResponse.of(text, functionCalls);
+                return ParsedResponse.of(text, functionCalls, tokenUsage);
             }
 
             // Return text content if available
             if (textContent.length() > 0) {
-                return ParsedResponse.ofText(textContent.toString());
+                return ParsedResponse.ofText(textContent.toString(), tokenUsage);
             }
 
             // Last fallback: try to extract any text from first output
@@ -1155,7 +1200,7 @@ public class UnifiedRequestService {
                 if (content != null && !content.isEmpty()) {
                     Object text = content.get(0).get("text");
                     if (text != null) {
-                        return ParsedResponse.ofText(text.toString());
+                        return ParsedResponse.ofText(text.toString(), tokenUsage);
                     }
                 }
             }
@@ -1307,35 +1352,40 @@ public class UnifiedRequestService {
         try {
             String jsonResponse = parsed.getTextContent();
             List<FunctionCall> functionCalls = parsed.hasFunctionCalls() ? parsed.getFunctionCalls() : null;
+            AgentResult result;
 
             // No resultClass → return DefaultResult
             if (agent.getResultClass() == null || agent.getResultClass().isEmpty()) {
                 DefaultResult defaultResult = new DefaultResult(jsonResponse);
                 if (functionCalls != null) defaultResult.setFunctionCalls(functionCalls);
-                return CompletableFuture.completedFuture(defaultResult);
-            }
-
-            String fullClassName = config.resolveResultClassName(agent.getResultClass());
-            if (fullClassName == null) {
-                logger.warn("Cannot resolve result class '{}' for agent {} - use FQCN or configure agentResultClassPackage",
-                        agent.getResultClass(), agent.getId());
-                DefaultResult defaultResult = new DefaultResult(jsonResponse);
-                if (functionCalls != null) defaultResult.setFunctionCalls(functionCalls);
-                return CompletableFuture.completedFuture(defaultResult);
-            }
-
-            // Parse text content as resultClass
-            Class<?> resultClass = Class.forName(fullClassName);
-            AgentResult result;
-            if (jsonResponse != null && !jsonResponse.isBlank()) {
-                result = (AgentResult) objectMapper.readValue(jsonResponse, resultClass);
+                result = defaultResult;
             } else {
-                result = (AgentResult) resultClass.getDeclaredConstructor().newInstance();
+                String fullClassName = config.resolveResultClassName(agent.getResultClass());
+                if (fullClassName == null) {
+                    logger.warn("Cannot resolve result class '{}' for agent {} - use FQCN or configure agentResultClassPackage",
+                            agent.getResultClass(), agent.getId());
+                    DefaultResult defaultResult = new DefaultResult(jsonResponse);
+                    if (functionCalls != null) defaultResult.setFunctionCalls(functionCalls);
+                    result = defaultResult;
+                } else {
+                    // Parse text content as resultClass
+                    Class<?> resultClass = Class.forName(fullClassName);
+                    if (jsonResponse != null && !jsonResponse.isBlank()) {
+                        result = (AgentResult) objectMapper.readValue(jsonResponse, resultClass);
+                    } else {
+                        result = (AgentResult) resultClass.getDeclaredConstructor().newInstance();
+                    }
+
+                    // Attach function calls if present (all AgentResult subclasses support this now)
+                    if (functionCalls != null && !functionCalls.isEmpty()) {
+                        result.setFunctionCalls(functionCalls);
+                    }
+                }
             }
 
-            // Attach function calls if present (all AgentResult subclasses support this now)
-            if (functionCalls != null && !functionCalls.isEmpty()) {
-                result.setFunctionCalls(functionCalls);
+            // Propagate token usage to result
+            if (parsed.getTokenUsage() != null) {
+                result.setUsage(parsed.getTokenUsage());
             }
 
             return CompletableFuture.completedFuture(result);
@@ -1713,10 +1763,18 @@ public class UnifiedRequestService {
 
         String response = chatResponse.getChoices().get(0).getMessage().getContent();
 
-        // LOG RESPONSE END
+        // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("<- CHAT END | Response: {} | Model: {} | Instance: {}",
-                responsePreview, model, instance.getId());
+        if (chatResponse.getUsage() != null) {
+            TokenUsage tokenUsage = ModelPricing.calculate(model,
+                    chatResponse.getUsage().getPromptTokens(),
+                    chatResponse.getUsage().getCompletionTokens());
+            logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
+                    ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
+        } else {
+            logger.info("<- CHAT END | Response: {} | Model: {} | Instance: {}",
+                    responsePreview, model, instance.getId());
+        }
 
         return response;
     }
@@ -1736,10 +1794,18 @@ public class UnifiedRequestService {
 
         String response = claudeResponse.getTextContent();
 
-        // LOG RESPONSE END
+        // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("<- CHAT END | Response: {} | Model: {} | Instance: {}",
-                responsePreview, model, instance.getId());
+        if (claudeResponse.getUsage() != null) {
+            TokenUsage tokenUsage = ModelPricing.calculate(model,
+                    claudeResponse.getUsage().getInputTokens(),
+                    claudeResponse.getUsage().getOutputTokens());
+            logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
+                    ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
+        } else {
+            logger.info("<- CHAT END | Response: {} | Model: {} | Instance: {}",
+                    responsePreview, model, instance.getId());
+        }
 
         return response;
     }
@@ -1762,10 +1828,18 @@ public class UnifiedRequestService {
 
         String response = claudeResponse.getTextContent();
 
-        // LOG RESPONSE END
+        // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
-        logger.info("<- CHAT STRUCTURED END | Response: {} | Model: {} | Instance: {}",
-                responsePreview, model, instance.getId());
+        if (claudeResponse.getUsage() != null) {
+            TokenUsage tokenUsage = ModelPricing.calculate(model,
+                    claudeResponse.getUsage().getInputTokens(),
+                    claudeResponse.getUsage().getOutputTokens());
+            logger.info("<- CHAT STRUCTURED END | {} | Response: {} | Model: {} | Instance: {}",
+                    ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
+        } else {
+            logger.info("<- CHAT STRUCTURED END | Response: {} | Model: {} | Instance: {}",
+                    responsePreview, model, instance.getId());
+        }
 
         return response;
     }
@@ -2015,9 +2089,16 @@ public class UnifiedRequestService {
             result[i] = embedding.get(i).floatValue();
         }
 
-        // LOG RESPONSE END
-        logger.info("<- EMBEDDING END | Dimensions: {} | Model: {} | Instance: {}",
-                result.length, model, instance.getId());
+        // LOG RESPONSE END with usage
+        if (response.getUsage() != null) {
+            TokenUsage tokenUsage = ModelPricing.calculate(model,
+                    response.getUsage().getPromptTokens(), 0);
+            logger.info("<- EMBEDDING END | Dimensions: {} | {} | Model: {} | Instance: {}",
+                    result.length, ModelPricing.formatForLog(tokenUsage), model, instance.getId());
+        } else {
+            logger.info("<- EMBEDDING END | Dimensions: {} | Model: {} | Instance: {}",
+                    result.length, model, instance.getId());
+        }
 
         return result;
     }
@@ -2054,9 +2135,17 @@ public class UnifiedRequestService {
             results.add(result);
         }
 
-        // LOG RESPONSE END
-        logger.info("<- EMBEDDING BATCH END | Count: {} | Dimensions: {} | Model: {} | Instance: {}",
-                results.size(), results.isEmpty() ? 0 : results.get(0).length, model, instance.getId());
+        // LOG RESPONSE END with usage
+        if (response.getUsage() != null) {
+            TokenUsage tokenUsage = ModelPricing.calculate(model,
+                    response.getUsage().getPromptTokens(), 0);
+            logger.info("<- EMBEDDING BATCH END | Count: {} | Dimensions: {} | {} | Model: {} | Instance: {}",
+                    results.size(), results.isEmpty() ? 0 : results.get(0).length,
+                    ModelPricing.formatForLog(tokenUsage), model, instance.getId());
+        } else {
+            logger.info("<- EMBEDDING BATCH END | Count: {} | Dimensions: {} | Model: {} | Instance: {}",
+                    results.size(), results.isEmpty() ? 0 : results.get(0).length, model, instance.getId());
+        }
 
         return results;
     }
