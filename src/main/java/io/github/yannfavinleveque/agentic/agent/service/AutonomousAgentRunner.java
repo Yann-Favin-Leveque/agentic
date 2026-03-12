@@ -255,6 +255,17 @@ public class AutonomousAgentRunner {
 
         logger.debug("Autonomous loop iteration {} for agent '{}'", iteration, originalAgent.getId());
 
+        // Compact old tool results if configured — before sending to LLM
+        Integer compactAfter = originalAgent.getCompactToolResultsAfterIteration();
+        if (compactAfter != null && iteration >= compactAfter) {
+            // Keep the last 2 tool results (from the most recent iteration)
+            int compacted = conversationManager.compactToolResults(convId, 2);
+            if (compacted > 0) {
+                logger.info("Compacted {} old tool results at iteration {} for agent '{}'",
+                        compacted, iteration, originalAgent.getId());
+            }
+        }
+
         // Call the REAL requestAgent → goes through permits, retries, rate limiting.
         // First iteration: use conversationId overload (adds userMessage + assistant response to conversation).
         // Subsequent iterations: use history overload (stateless), then manually store assistant response

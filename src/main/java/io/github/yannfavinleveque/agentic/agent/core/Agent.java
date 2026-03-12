@@ -168,6 +168,16 @@ public class Agent {
     private Integer maxToolTokenOutput;
 
     /**
+     * When set, tool result contents from previous iterations are cleared from
+     * the conversation history starting at this iteration number.
+     * The tool call structure (name + arguments) is preserved so the agent can see
+     * what it already searched, but the bulky response data is removed.
+     * This prevents context from growing quadratically in multi-turn tool loops.
+     * If null (default), no compaction is applied.
+     */
+    private Integer compactToolResultsAfterIteration;
+
+    /**
      * Reasoning effort level for the agent.
      * null or "none" = no reasoning. "low"/"medium"/"high" = reasoning with effort level.
      * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).

@@ -179,6 +179,51 @@ public class ConversationManager {
     }
 
     /**
+     * Compacts tool result messages in a conversation by clearing their content.
+     * Preserves the message structure (role, toolCallId, toolName) so the LLM API
+     * doesn't reject the request, but replaces the bulky response data with a
+     * minimal placeholder. The most recent N tool results are kept intact.
+     *
+     * @param conversationId Conversation ID
+     * @param keepLastN      Number of most recent tool results to keep intact
+     * @return Number of tool results compacted
+     */
+    public int compactToolResults(String conversationId, int keepLastN) {
+        if (conversationId == null) return 0;
+
+        List<Message> history = conversations.get(conversationId);
+        if (history == null) return 0;
+
+        // Find all tool result message indices
+        List<Integer> toolResultIndices = new ArrayList<>();
+        for (int i = 0; i < history.size(); i++) {
+            if ("tool".equals(history.get(i).getRole())) {
+                toolResultIndices.add(i);
+            }
+        }
+
+        // Keep the last N tool results intact, compact the rest
+        int compactCount = 0;
+        int compactUpTo = toolResultIndices.size() - keepLastN;
+        for (int j = 0; j < compactUpTo; j++) {
+            int idx = toolResultIndices.get(j);
+            Message original = history.get(idx);
+            // Replace with a compacted version — keep structure, clear content
+            history.set(idx, Message.toolResult(
+                    original.getToolCallId(),
+                    original.getToolName(),
+                    "[compacted]"));
+            compactCount++;
+        }
+
+        if (compactCount > 0) {
+            logger.debug("Compacted {} tool results in conversation {} (kept last {})",
+                    compactCount, conversationId, keepLastN);
+        }
+        return compactCount;
+    }
+
+    /**
      * Deletes a conversation and frees its memory.
      *
      * @param conversationId Conversation ID
