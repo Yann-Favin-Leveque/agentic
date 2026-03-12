@@ -258,8 +258,9 @@ public class AutonomousAgentRunner {
         // Compact old tool results if configured — before sending to LLM
         Integer compactAfter = originalAgent.getCompactToolResultsAfterIteration();
         if (compactAfter != null && iteration >= compactAfter) {
-            // Keep the last 2 tool results (from the most recent iteration)
-            int compacted = conversationManager.compactToolResults(convId, 2);
+            int keepIterations = originalAgent.getCompactKeepLastNIterations() != null
+                    ? originalAgent.getCompactKeepLastNIterations() : 1;
+            int compacted = conversationManager.compactToolResults(convId, keepIterations);
             if (compacted > 0) {
                 logger.info("Compacted {} old tool results at iteration {} for agent '{}'",
                         compacted, iteration, originalAgent.getId());

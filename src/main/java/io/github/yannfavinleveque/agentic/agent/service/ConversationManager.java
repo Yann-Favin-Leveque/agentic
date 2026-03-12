@@ -182,43 +182,57 @@ public class ConversationManager {
      * Compacts tool result messages in a conversation by clearing their content.
      * Preserves the message structure (role, toolCallId, toolName) so the LLM API
      * doesn't reject the request, but replaces the bulky response data with a
-     * minimal placeholder. The most recent N tool results are kept intact.
+     * minimal placeholder.
+     * <p>
+     * Keeps all tool results from the most recent iteration intact (i.e. all tool
+     * results after the last assistant message). This correctly handles parallel
+     * tool calls where the LLM returns multiple tool calls in a single response.
+     * <p>
+     * Additionally keeps the {@code keepLastNIterations - 1} previous iterations'
+     * tool results intact.
      *
-     * @param conversationId Conversation ID
-     * @param keepLastN      Number of most recent tool results to keep intact
+     * @param conversationId      Conversation ID
+     * @param keepLastNIterations Number of most recent iterations whose tool results are kept intact (minimum 1)
      * @return Number of tool results compacted
      */
-    public int compactToolResults(String conversationId, int keepLastN) {
+    public int compactToolResults(String conversationId, int keepLastNIterations) {
         if (conversationId == null) return 0;
+        keepLastNIterations = Math.max(1, keepLastNIterations);
 
         List<Message> history = conversations.get(conversationId);
         if (history == null) return 0;
 
-        // Find all tool result message indices
-        List<Integer> toolResultIndices = new ArrayList<>();
-        for (int i = 0; i < history.size(); i++) {
-            if ("tool".equals(history.get(i).getRole())) {
-                toolResultIndices.add(i);
+        // Find boundaries: each "assistant" message starts a new iteration.
+        // Tool results after the Nth-to-last assistant message are kept.
+        // Walk backwards to find the Nth assistant message.
+        int assistantCount = 0;
+        int keepFromIndex = history.size(); // default: keep nothing extra
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if ("assistant".equals(history.get(i).getRole())) {
+                assistantCount++;
+                if (assistantCount >= keepLastNIterations) {
+                    keepFromIndex = i;
+                    break;
+                }
             }
         }
 
-        // Keep the last N tool results intact, compact the rest
+        // Compact all tool results before keepFromIndex
         int compactCount = 0;
-        int compactUpTo = toolResultIndices.size() - keepLastN;
-        for (int j = 0; j < compactUpTo; j++) {
-            int idx = toolResultIndices.get(j);
-            Message original = history.get(idx);
-            // Replace with a compacted version — keep structure, clear content
-            history.set(idx, Message.toolResult(
-                    original.getToolCallId(),
-                    original.getToolName(),
-                    "[compacted]"));
-            compactCount++;
+        for (int i = 0; i < keepFromIndex; i++) {
+            Message msg = history.get(i);
+            if ("tool".equals(msg.getRole()) && !"[compacted]".equals(msg.getTextContent())) {
+                history.set(i, Message.toolResult(
+                        msg.getToolCallId(),
+                        msg.getToolName(),
+                        "[compacted]"));
+                compactCount++;
+            }
         }
 
         if (compactCount > 0) {
-            logger.debug("Compacted {} tool results in conversation {} (kept last {})",
-                    compactCount, conversationId, keepLastN);
+            logger.debug("Compacted {} tool results in conversation {} (kept last {} iteration(s))",
+                    compactCount, conversationId, keepLastNIterations);
         }
         return compactCount;
     }

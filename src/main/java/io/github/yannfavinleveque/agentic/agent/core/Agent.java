@@ -178,6 +178,15 @@ public class Agent {
     private Integer compactToolResultsAfterIteration;
 
     /**
+     * Number of most recent iterations whose tool results are kept intact
+     * when compaction is active. Default: 1 (keep only the current iteration's results).
+     * Handles parallel tool calls correctly — all tool results from one iteration are
+     * kept together regardless of how many there are.
+     */
+    @Builder.Default
+    private Integer compactKeepLastNIterations = 1;
+
+    /**
      * Reasoning effort level for the agent.
      * null or "none" = no reasoning. "low"/"medium"/"high" = reasoning with effort level.
      * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).
