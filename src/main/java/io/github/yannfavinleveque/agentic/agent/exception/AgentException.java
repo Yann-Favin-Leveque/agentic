@@ -43,6 +43,9 @@ public class AgentException extends RuntimeException {
         CONTENT_FILTER_VIOLATION("Content filter violation"),
         REQUEST_TIMEOUT("Request timeout"),
         REQUEST_FAILED("Request failed"),
+        MAX_TOKENS_EXCEEDED("LLM output truncated due to max tokens limit"),
+        DESERIALIZATION_FAILED("Failed to deserialize LLM response into result class"),
+        MAX_ITERATIONS_EXCEEDED("Autonomous agent exceeded max iterations"),
 
         // Provider errors
         PROVIDER_ERROR("Provider API error"),

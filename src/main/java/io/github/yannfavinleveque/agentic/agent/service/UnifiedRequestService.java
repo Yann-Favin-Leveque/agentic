@@ -2,6 +2,7 @@ package io.github.yannfavinleveque.agentic.agent.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yannfavinleveque.agentic.agent.config.AgentServiceConfig;
+import io.github.yannfavinleveque.agentic.agent.config.RetryConfig;
 import io.github.yannfavinleveque.agentic.agent.core.Agent;
 import io.github.yannfavinleveque.agentic.agent.core.Instance;
 import io.github.yannfavinleveque.agentic.agent.core.ProviderConfig;
@@ -266,8 +267,6 @@ public class UnifiedRequestService {
     }
 
     private CompletableFuture<AgentResult> attemptRequestAgentWithImages(Agent agent, List<Message> messagesWithUser, int attempt) {
-        final int MAX_RETRIES = config.getMaxRetries();
-
         return executeRequestAgentWithImages(agent, messagesWithUser, attempt)
                 .thenCompose(parsed -> deserializeResponse(agent, parsed))
                 .handle((result, error) -> {
@@ -276,14 +275,16 @@ public class UnifiedRequestService {
                     }
 
                     Throwable cause = unwrapException(error);
+                    int maxRetries = getMaxRetriesForError(cause, agent);
 
-                    if (!shouldRetry(cause) || attempt >= MAX_RETRIES) {
+                    if (maxRetries < 0 || attempt >= maxRetries) {
                         return CompletableFuture.<AgentResult>failedFuture(cause);
                     }
 
                     long delay = calculateDelay(cause, attempt);
-                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {}",
-                            attempt + 1, MAX_RETRIES, delay, cause.getMessage());
+                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {} [{}]",
+                            attempt + 1, maxRetries, delay, cause.getMessage(),
+                            cause instanceof AgentException ? ((AgentException) cause).getErrorCode() : "UNKNOWN");
 
                     return delayAsync(delay)
                             .thenCompose(v -> attemptRequestAgentWithImages(agent, messagesWithUser, attempt + 1));
@@ -443,10 +444,18 @@ public class UnifiedRequestService {
 
     /**
      * Parses a Claude response into a ParsedResponse with text and function calls.
+     * Detects max_tokens stop reason and throws MAX_TOKENS_EXCEEDED before deserialization.
      */
     private ParsedResponse parseClaudeResponse(ClaudeResponse response) {
         if (response == null || response.getContent() == null) {
             return ParsedResponse.ofText("");
+        }
+
+        // Detect truncated output before attempting deserialization
+        if ("max_tokens".equals(response.getStopReason())) {
+            throw new AgentException(AgentException.ErrorCode.MAX_TOKENS_EXCEEDED,
+                    "Claude response truncated (stop_reason=max_tokens). "
+                            + "Consider increasing maxTokens or reducing prompt size.");
         }
 
         StringBuilder textContent = new StringBuilder();
@@ -643,8 +652,6 @@ public class UnifiedRequestService {
     private CompletableFuture<AgentResult> attemptRequestModelInternalWithRetry(
             Agent tempAgent, List<Message> messagesWithUser, ModelRequestOptions options, int attempt) {
 
-        final int MAX_RETRIES = config.getMaxRetries();
-
         return executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt)
                 .thenCompose(parsed -> deserializeModelResponse(parsed, options))
                 .handle((result, error) -> {
@@ -653,14 +660,16 @@ public class UnifiedRequestService {
                     }
 
                     Throwable cause = unwrapException(error);
+                    int maxRetries = getMaxRetriesForError(cause, tempAgent);
 
-                    if (!shouldRetry(cause) || attempt >= MAX_RETRIES) {
+                    if (maxRetries < 0 || attempt >= maxRetries) {
                         return CompletableFuture.<AgentResult>failedFuture(cause);
                     }
 
                     long delay = calculateDelay(cause, attempt);
-                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {}",
-                            attempt + 1, MAX_RETRIES, delay, cause.getMessage());
+                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {} [{}]",
+                            attempt + 1, maxRetries, delay, cause.getMessage(),
+                            cause instanceof AgentException ? ((AgentException) cause).getErrorCode() : "UNKNOWN");
 
                     return delayAsync(delay)
                             .thenCompose(v -> attemptRequestModelInternalWithRetry(tempAgent, messagesWithUser, options, attempt + 1));
@@ -882,7 +891,7 @@ public class UnifiedRequestService {
 
         } catch (Exception e) {
             return CompletableFuture.failedFuture(new AgentException(
-                    AgentException.ErrorCode.REQUEST_FAILED,
+                    AgentException.ErrorCode.DESERIALIZATION_FAILED,
                     "Failed to deserialize response: " + e.getMessage(), e));
         }
     }
@@ -892,8 +901,6 @@ public class UnifiedRequestService {
     private CompletableFuture<AgentResult> attemptRequestWithRetry(
             Agent agent, String userMessage, List<Message> history, int attempt) {
 
-        final int MAX_RETRIES = config.getMaxRetries();
-
         return executeRequest(agent, userMessage, history, attempt)
                 .thenCompose(parsed -> deserializeResponse(agent, parsed))
                 .handle((result, error) -> {
@@ -902,15 +909,16 @@ public class UnifiedRequestService {
                     }
 
                     Throwable cause = unwrapException(error);
+                    int maxRetries = getMaxRetriesForError(cause, agent);
 
-                    // Don't retry certain errors
-                    if (!shouldRetry(cause) || attempt >= MAX_RETRIES) {
+                    if (maxRetries < 0 || attempt >= maxRetries) {
                         return CompletableFuture.<AgentResult>failedFuture(cause);
                     }
 
                     long delay = calculateDelay(cause, attempt);
-                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {}",
-                            attempt + 1, MAX_RETRIES, delay, cause.getMessage());
+                    logger.warn("Request failed (attempt {}/{}), retrying in {}ms: {} [{}]",
+                            attempt + 1, maxRetries, delay, cause.getMessage(),
+                            cause instanceof AgentException ? ((AgentException) cause).getErrorCode() : "UNKNOWN");
 
                     return delayAsync(delay)
                             .thenCompose(v -> attemptRequestWithRetry(agent, userMessage, history, attempt + 1));
@@ -1121,6 +1129,18 @@ public class UnifiedRequestService {
             Map<String, Object> response = objectMapper.readValue(jsonResponse,
                     new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
                     });
+
+            // Detect truncated output (OpenAI Responses API: status=incomplete + max_output_tokens)
+            String status = (String) response.get("status");
+            if ("incomplete".equals(status)) {
+                Map<String, Object> incompleteDetails = (Map<String, Object>) response.get("incomplete_details");
+                String reason = incompleteDetails != null ? (String) incompleteDetails.get("reason") : "unknown";
+                if ("max_output_tokens".equals(reason)) {
+                    throw new AgentException(AgentException.ErrorCode.MAX_TOKENS_EXCEEDED,
+                            "OpenAI response truncated (status=incomplete, reason=max_output_tokens). "
+                                    + "Consider increasing maxTokens or reducing prompt size.");
+                }
+            }
 
             // Responses API returns output array
             List<Map<String, Object>> output = (List<Map<String, Object>>) response.get("output");
@@ -1396,7 +1416,7 @@ public class UnifiedRequestService {
                     "Result class not found: " + agent.getResultClass() + " (resolved: " + config.resolveResultClassName(agent.getResultClass()) + ")"));
         } catch (Exception e) {
             return CompletableFuture.failedFuture(new AgentException(
-                    AgentException.ErrorCode.REQUEST_FAILED,
+                    AgentException.ErrorCode.DESERIALIZATION_FAILED,
                     "Failed to deserialize response: " + e.getMessage(), e));
         }
     }
@@ -1429,19 +1449,55 @@ public class UnifiedRequestService {
         return error;
     }
 
-    private boolean shouldRetry(Throwable e) {
+    /**
+     * Determines the maximum number of retries allowed for a given error, based on the agent's
+     * RetryConfig (falling back to global defaults).
+     *
+     * @param e     the error that occurred
+     * @param agent the agent that made the request (may be null for model-level requests)
+     * @return max retries allowed for this error type, or -1 if the error should never be retried
+     */
+    private int getMaxRetriesForError(Throwable e, Agent agent) {
         String message = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
 
-        // Don't retry content filter or 4xx errors (except rate limits)
+        // Never retry content filter or 4xx errors (except rate limits)
         if (message.contains("content_filter") || message.contains("content filter")) {
-            return false;
+            return -1;
         }
         if ((message.contains("400") || message.contains("401") || message.contains("403"))
                 && !message.contains("429")) {
-            return false;
+            return -1;
         }
 
-        return true;
+        RetryConfig agentRetryConfig = agent != null ? agent.getRetryConfig() : null;
+        RetryConfig effectiveConfig = agentRetryConfig != null ? agentRetryConfig : new RetryConfig();
+        RetryConfig globalDefault = config.getDefaultRetryConfig();
+
+        // Classify error type and return appropriate max retries
+        if (e instanceof AgentException) {
+            AgentException ae = (AgentException) e;
+            switch (ae.getErrorCode()) {
+                case MAX_TOKENS_EXCEEDED:
+                    return effectiveConfig.resolveMaxTokenRetries(globalDefault);
+                case DESERIALIZATION_FAILED:
+                    return effectiveConfig.resolveDeserializationRetries(globalDefault);
+                case MAX_ITERATIONS_EXCEEDED:
+                    return effectiveConfig.resolveMaxIterationRetries(globalDefault);
+                default:
+                    break;
+            }
+        }
+
+        // All other errors (network, rate limit, 502, timeout, etc.) → network retries
+        return effectiveConfig.resolveNetworkRetries(globalDefault);
+    }
+
+    /**
+     * @deprecated Use {@link #getMaxRetriesForError(Throwable, Agent)} instead
+     */
+    @Deprecated
+    private boolean shouldRetry(Throwable e) {
+        return getMaxRetriesForError(e, null) != -1;
     }
 
     private long calculateDelay(Throwable e, int attempt) {

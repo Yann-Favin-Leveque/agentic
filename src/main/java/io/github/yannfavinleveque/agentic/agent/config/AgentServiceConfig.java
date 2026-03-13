@@ -153,6 +153,15 @@ public class AgentServiceConfig {
     @Builder.Default
     private final long error502DelayMs = 300000L;
 
+    // === Retry Configuration ===
+
+    /**
+     * Global default retry configuration for all agents.
+     * Individual agents can override these values in their retryConfig.
+     * If null, library hard-coded defaults are used (network=7, maxToken=1, deserialization=1, maxIteration=1).
+     */
+    private final RetryConfig defaultRetryConfig;
+
     // === Executor Configuration ===
 
     /**

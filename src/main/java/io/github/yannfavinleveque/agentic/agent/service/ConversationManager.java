@@ -266,6 +266,21 @@ public class ConversationManager {
     }
 
     /**
+     * Clears all messages from a conversation without deleting it.
+     * Useful for retrying an autonomous loop from scratch while keeping the same conversation ID.
+     *
+     * @param conversationId Conversation ID
+     */
+    public void clearHistory(String conversationId) {
+        if (conversationId == null) return;
+        List<Message> history = conversations.get(conversationId);
+        if (history != null) {
+            history.clear();
+            logger.debug("Cleared history for conversation: {}", conversationId);
+        }
+    }
+
+    /**
      * Gets the number of messages in a conversation.
      *
      * @param conversationId Conversation ID

@@ -259,6 +259,7 @@ public class AgentManager {
                     .maxIterations(definition.getMaxIterations() != null ? definition.getMaxIterations() : 25)
                     .maxToolTokenOutput(definition.getMaxToolTokenOutput())
                     .reasoningEffort(definition.getReasoningEffort())
+                    .retryConfig(definition.getRetryConfig())
                     .build();
 
             agents.put(agent.getId(), agent);

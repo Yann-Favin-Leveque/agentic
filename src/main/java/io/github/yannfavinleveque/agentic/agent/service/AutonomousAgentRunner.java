@@ -1,6 +1,7 @@
 package io.github.yannfavinleveque.agentic.agent.service;
 
 import io.github.yannfavinleveque.agentic.agent.config.AgentServiceConfig;
+import io.github.yannfavinleveque.agentic.agent.config.RetryConfig;
 import io.github.yannfavinleveque.agentic.agent.core.Agent;
 import io.github.yannfavinleveque.agentic.agent.exception.AgentException;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
@@ -82,13 +83,18 @@ public class AutonomousAgentRunner {
         Agent virtualAgent = buildVirtualAgent(agent);
         agentManager.registerAgent(virtualAgent);
 
-        logger.info("Starting autonomous loop for agent '{}' (virtualId={}, maxIterations={}, conversation={})",
-                agent.getId(), virtualAgent.getId(), maxIterations, convId);
+        // Resolve max iteration retries
+        RetryConfig agentRetryConfig = agent.getRetryConfig() != null ? agent.getRetryConfig() : new RetryConfig();
+        int maxIterationRetries = agentRetryConfig.resolveMaxIterationRetries(config.getDefaultRetryConfig());
 
-        // Accumulate token usage across all iterations
+        logger.info("Starting autonomous loop for agent '{}' (virtualId={}, maxIterations={}, maxIterationRetries={}, conversation={})",
+                agent.getId(), virtualAgent.getId(), maxIterations, maxIterationRetries, convId);
+
+        // Accumulate token usage across all iterations (including retries)
         TokenUsage cumulativeUsage = new TokenUsage();
 
-        return executeLoop(virtualAgent, agent, convId, userMessage, effectiveExecutor, 0, maxIterations, cumulativeUsage)
+        return executeLoopWithRetry(virtualAgent, agent, convId, userMessage, effectiveExecutor,
+                maxIterations, cumulativeUsage, 0, maxIterationRetries)
                 .whenComplete((result, error) -> {
                     // Cleanup: unregister virtual agent
                     agentManager.removeAgent(virtualAgent.getId());
@@ -238,6 +244,44 @@ public class AutonomousAgentRunner {
     }
 
     /**
+     * Wraps executeLoop with retry logic for MAX_ITERATIONS_EXCEEDED errors.
+     * When the autonomous loop exceeds maxIterations, clears the conversation and retries from scratch.
+     */
+    private CompletableFuture<AgentResult> executeLoopWithRetry(Agent virtualAgent, Agent originalAgent,
+                                                                 String convId, String userMessage,
+                                                                 ToolExecutor toolExecutor,
+                                                                 int maxIterations, TokenUsage cumulativeUsage,
+                                                                 int retryAttempt, int maxRetries) {
+        return executeLoop(virtualAgent, originalAgent, convId, userMessage, toolExecutor, 0, maxIterations, cumulativeUsage)
+                .handle((result, error) -> {
+                    if (error == null) {
+                        return CompletableFuture.completedFuture(result);
+                    }
+
+                    Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
+                            ? error.getCause() : error;
+
+                    // Only retry MAX_ITERATIONS_EXCEEDED
+                    boolean isMaxIterations = cause instanceof AgentException
+                            && ((AgentException) cause).getErrorCode() == AgentException.ErrorCode.MAX_ITERATIONS_EXCEEDED;
+
+                    if (!isMaxIterations || retryAttempt >= maxRetries) {
+                        return CompletableFuture.<AgentResult>failedFuture(cause);
+                    }
+
+                    logger.warn("Autonomous agent '{}' exceeded max iterations (attempt {}/{}), retrying full loop...",
+                            originalAgent.getId(), retryAttempt + 1, maxRetries);
+
+                    // Clear conversation history for a fresh retry
+                    conversationManager.clearHistory(convId);
+
+                    return executeLoopWithRetry(virtualAgent, originalAgent, convId, userMessage, toolExecutor,
+                            maxIterations, cumulativeUsage, retryAttempt + 1, maxRetries);
+                })
+                .thenCompose(f -> f);
+    }
+
+    /**
      * The loop: call requestAgent → handle response → repeat.
      * Each iteration goes through the full AgentService.requestAgent() pipeline (permits, retries, etc).
      */
@@ -248,7 +292,7 @@ public class AutonomousAgentRunner {
                                                        TokenUsage cumulativeUsage) {
         if (iteration >= maxIterations) {
             return CompletableFuture.failedFuture(new AgentException(
-                    AgentException.ErrorCode.REQUEST_FAILED,
+                    AgentException.ErrorCode.MAX_ITERATIONS_EXCEEDED,
                     "Autonomous agent '" + originalAgent.getId()
                             + "' exceeded max iterations (" + maxIterations + ")"));
         }

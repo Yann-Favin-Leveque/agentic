@@ -3,6 +3,7 @@ package io.github.yannfavinleveque.agentic.agent.model;
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.github.yannfavinleveque.agentic.agent.config.RetryConfig;
 import io.github.yannfavinleveque.agentic.agent.core.ProviderConfig;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -201,5 +202,13 @@ public class AgentDefinition {
     @JsonProperty("reasoningEffort")
     @JsonAlias("reasoning_effort")
     private String reasoningEffort;
+
+    /**
+     * Per-agent retry configuration for different error types.
+     * If null, uses the global default from AgentServiceConfig.
+     */
+    @JsonProperty("retryConfig")
+    @JsonAlias("retry_config")
+    private RetryConfig retryConfig;
 
 }

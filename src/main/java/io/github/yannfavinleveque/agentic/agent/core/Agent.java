@@ -1,5 +1,6 @@
 package io.github.yannfavinleveque.agentic.agent.core;
 
+import io.github.yannfavinleveque.agentic.agent.config.RetryConfig;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionConfig;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -192,5 +193,11 @@ public class Agent {
      * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).
      */
     private String reasoningEffort;
+
+    /**
+     * Per-agent retry configuration for different error types.
+     * If null, uses the global default from AgentServiceConfig.
+     */
+    private RetryConfig retryConfig;
 
 }
