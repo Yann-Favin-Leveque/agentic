@@ -3,7 +3,9 @@ package io.github.yannfavinleveque.agentic.agent.core;
 import lombok.Builder;
 import lombok.Getter;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents an OpenAI/Azure instance with its configuration and capabilities.
@@ -51,6 +53,36 @@ public class Instance {
      * Examples: ["gpt-4o", "gpt-4o-mini"], ["dall-e-3"], ["claude-sonnet-4-5"]
      */
     private final List<String> deployedModels;
+
+    /**
+     * Per-model rate limits (requests per second) for this instance.
+     * Keys are model names or "*" for default. Null means use global config.
+     */
+    @Builder.Default
+    private final Map<String, Integer> rateLimits = Collections.emptyMap();
+
+    /**
+     * Returns the rate limit for a specific model on this instance.
+     * Resolution order: exact model match → "*" wildcard → fallback value.
+     *
+     * @param model    Model name
+     * @param fallback Value to return if no rate limit is configured
+     * @return Requests per second for this model on this instance
+     */
+    public int getRateLimitForModel(String model, int fallback) {
+        if (rateLimits == null || rateLimits.isEmpty()) {
+            return fallback;
+        }
+        Integer modelLimit = rateLimits.get(model);
+        if (modelLimit != null) {
+            return modelLimit;
+        }
+        Integer wildcardLimit = rateLimits.get("*");
+        if (wildcardLimit != null) {
+            return wildcardLimit;
+        }
+        return fallback;
+    }
 
     /**
      * Check if this instance has a specific model deployed

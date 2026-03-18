@@ -101,7 +101,10 @@ public class AgentService {
         } else {
             logger.info("Initialized {} AI instance(s)", instances.size());
             for (Instance inst : instances) {
-                logger.info("  - {} ({}) models: {}", inst.getId(), inst.getProvider(), inst.getDeployedModels());
+                String rateLimitInfo = (inst.getRateLimits() != null && !inst.getRateLimits().isEmpty())
+                        ? " rateLimits: " + inst.getRateLimits()
+                        : "";
+                logger.info("  - {} ({}) models: {}{}", inst.getId(), inst.getProvider(), inst.getDeployedModels(), rateLimitInfo);
             }
         }
 
@@ -1097,6 +1100,7 @@ public class AgentService {
                     .provider(providerType)
                     .azureApiVersion(ic.getApiVersion())
                     .deployedModels(ic.getModelsList())
+                    .rateLimits(ic.getRateLimits() != null ? ic.getRateLimits() : java.util.Collections.emptyMap())
                     .build();
 
             result.add(instance);

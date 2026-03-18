@@ -300,7 +300,7 @@ public class UnifiedRequestService {
 
         int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
         Instance instance = instanceRouter.getInstance(instanceIdx);
-        InstanceLimiter limiter = getLimiterForInstance(instance);
+        InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
         // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
@@ -687,7 +687,7 @@ public class UnifiedRequestService {
 
         int instanceIdx = instanceRouter.getNextInstanceForModel(tempAgent.getModel());
         Instance instance = instanceRouter.getInstance(instanceIdx);
-        InstanceLimiter limiter = getLimiterForInstance(instance);
+        InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, tempAgent.getModel());
 
         // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
@@ -936,7 +936,7 @@ public class UnifiedRequestService {
 
         int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
         Instance instance = instanceRouter.getInstance(instanceIdx);
-        InstanceLimiter limiter = getLimiterForInstance(instance);
+        InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
         // First acquire concurrent stream permit
         if (!limiter.tryAcquire()) {
@@ -1432,8 +1432,18 @@ public class UnifiedRequestService {
     // ==================== UTILITY METHODS ====================
 
     private InstanceLimiter getLimiterForInstance(Instance instance) {
-        return instanceLimiters.computeIfAbsent(instance.getId(),
-                id -> new InstanceLimiter(id, config.getMaxConcurrentStreamsPerInstance(), config.getRequestsPerSecond()));
+        return getLimiterForInstanceAndModel(instance, null);
+    }
+
+    private InstanceLimiter getLimiterForInstanceAndModel(Instance instance, String model) {
+        // Per-model rate limiting: key = "instanceId:model" (or just "instanceId" if no model)
+        String key = model != null ? instance.getId() + ":" + model : instance.getId();
+        return instanceLimiters.computeIfAbsent(key, k -> {
+            int rps = (model != null)
+                    ? instance.getRateLimitForModel(model, config.getRequestsPerSecond())
+                    : config.getRequestsPerSecond();
+            return new InstanceLimiter(key, config.getMaxConcurrentStreamsPerInstance(), rps);
+        });
     }
 
     private CompletableFuture<Void> delayAsync(long millis) {

@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Configuration for a single OpenAI or Azure OpenAI instance.
@@ -98,6 +99,24 @@ public class InstanceConfig {
     @JsonProperty("enabled")
     @Builder.Default
     private boolean enabled = true;
+
+    /**
+     * Per-model rate limits (requests per second) for this instance.
+     * Keys are model names (e.g., "gpt-5.4-mini") or "*" for default.
+     * If not set, falls back to the global requestsPerSecond from AgentServiceConfig.
+     *
+     * <p>Example:</p>
+     * <pre>{@code
+     * "rateLimits": {
+     *   "gpt-5.4": 40,
+     *   "gpt-5.4-mini": 40,
+     *   "gpt-4o": 3,
+     *   "*": 5
+     * }
+     * }</pre>
+     */
+    @JsonProperty("rateLimits")
+    private Map<String, Integer> rateLimits;
 
     /**
      * Parse the comma-separated models string into a List.

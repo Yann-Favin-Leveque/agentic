@@ -26,20 +26,23 @@ public class InstanceRouter {
     private final AtomicInteger globalIndex;
     private final Map<String, RateLimiter> rateLimiters;
 
+    private final int globalRequestsPerSecond;
+
     public InstanceRouter(List<Instance> instances, int requestsPerSecond) {
         this.instances = instances;
         this.modelIndexes = new ConcurrentHashMap<>();
         this.globalIndex = new AtomicInteger(0);
         this.rateLimiters = new ConcurrentHashMap<>();
+        this.globalRequestsPerSecond = requestsPerSecond;
 
-        // Create rate limiter for each instance
+        // Create rate limiter for each instance (using global default)
         for (Instance instance : instances) {
             RateLimiter limiter = new RateLimiter(requestsPerSecond);
             rateLimiters.put(instance.getBaseUrl(), limiter);
             logger.debug("Created rate limiter for instance {}: {} req/s", instance.getId(), requestsPerSecond);
         }
 
-        logger.info("Initialized per-instance rate limiters: {} req/s per instance", requestsPerSecond);
+        logger.info("Initialized per-instance rate limiters: {} req/s per instance (global default)", requestsPerSecond);
     }
 
     /**
@@ -240,5 +243,24 @@ public class InstanceRouter {
             throw new IllegalStateException("Rate limiter not found for instance: " + instance.getId());
         }
         return limiter;
+    }
+
+    /**
+     * Gets a per-model rate limiter for a specific instance.
+     * Uses the instance's rateLimits config if available, otherwise falls back to global default.
+     * Lazily creates and caches per-model limiters.
+     *
+     * @param instance The instance
+     * @param model    The model name
+     * @return RateLimiter for this instance+model combination
+     */
+    public RateLimiter getRateLimiterForInstanceAndModel(Instance instance, String model) {
+        String key = instance.getBaseUrl() + ":" + model;
+        return rateLimiters.computeIfAbsent(key, k -> {
+            int rps = instance.getRateLimitForModel(model, globalRequestsPerSecond);
+            logger.debug("Created per-model rate limiter for instance {} model {}: {} req/s",
+                    instance.getId(), model, rps);
+            return new RateLimiter(rps);
+        });
     }
 }
