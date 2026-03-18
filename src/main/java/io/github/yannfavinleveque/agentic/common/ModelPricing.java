@@ -24,6 +24,10 @@ public final class ModelPricing {
     static {
         // Entries are sorted by key length descending so longer prefixes match first.
         // Each value is {inputPricePerMTok, outputPricePerMTok}.
+        // ---- OpenAI GPT-5.4 family ----
+        put("gpt-5.4-mini", 0.75, 4.50);
+        put("gpt-5.4-nano", 0.15, 0.90);
+        put("gpt-5.4", 2.50, 15.00);
         // ---- OpenAI GPT-5.2 family ----
         put("gpt-5.2-pro", 21.00, 168.00);
         put("gpt-5.2-codex", 1.75, 14.00);
