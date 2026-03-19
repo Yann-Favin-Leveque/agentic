@@ -95,6 +95,8 @@ public class UnifiedRequestService {
         final int maxConcurrent;
         final long minIntervalMs; // minimum ms between requests (1000 / requestsPerSecond)
         final String instanceId;
+        /** Queue of waiters for when all concurrent slots are taken. */
+        final java.util.Queue<CompletableFuture<Void>> waitQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
         InstanceLimiter(String instanceId, int maxConcurrent, int requestsPerSecond) {
             this.instanceId = instanceId;
@@ -126,8 +128,44 @@ public class UnifiedRequestService {
             return inProgress.compareAndSet(current, current + 1);
         }
 
+        /**
+         * Non-blocking acquire: returns a future that completes when a permit is available.
+         * If a permit is immediately available, returns an already-completed future.
+         * Otherwise, queues the caller and completes the future when release() frees a slot.
+         */
+        CompletableFuture<Void> acquireAsync() {
+            if (tryAcquire()) {
+                return CompletableFuture.completedFuture(null);
+            }
+            CompletableFuture<Void> waiter = new CompletableFuture<>();
+            waitQueue.add(waiter);
+            // Double-check: a slot may have freed between tryAcquire and queue.add
+            if (tryAcquire()) {
+                CompletableFuture<Void> polled = waitQueue.poll();
+                if (polled != null) {
+                    polled.complete(null);
+                }
+            }
+            return waiter;
+        }
+
         void release() {
             inProgress.decrementAndGet();
+            // Wake up next waiter in queue, if any
+            drainWaiters();
+        }
+
+        private void drainWaiters() {
+            while (!waitQueue.isEmpty() && tryAcquire()) {
+                CompletableFuture<Void> waiter = waitQueue.poll();
+                if (waiter != null) {
+                    waiter.complete(null);
+                } else {
+                    // No waiter found despite non-empty check — race condition, release the permit
+                    inProgress.decrementAndGet();
+                    break;
+                }
+            }
         }
 
         int getCurrentCount() {
@@ -302,20 +340,16 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
-        // First acquire concurrent stream permit
-        if (!limiter.tryAcquire()) {
-            return delayAsync(50)
-                    .thenCompose(v -> executeRequestAgentWithImages(agent, messagesWithUser, attempt));
-        }
-
-        // Then rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter));
-        }
-
-        return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
+        // Acquire concurrent stream permit (non-blocking queue-based)
+        return limiter.acquireAsync().thenCompose(v -> {
+            // Then rate limit: non-blocking wait if too soon since last request on this instance
+            long rateDelay = limiter.acquireRateSlot();
+            if (rateDelay > 0) {
+                return delayAsync(rateDelay)
+                        .thenCompose(v2 -> executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter));
+            }
+            return executeRequestAgentWithImagesAfterPermit(agent, messagesWithUser, instance, limiter);
+        });
     }
 
     private CompletableFuture<ParsedResponse> executeRequestAgentWithImagesAfterPermit(
@@ -689,20 +723,15 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, tempAgent.getModel());
 
-        // First acquire concurrent stream permit
-        if (!limiter.tryAcquire()) {
-            return delayAsync(50)
-                    .thenCompose(v -> executeRequestModelInternal(tempAgent, messagesWithUser, options, attempt));
-        }
-
-        // Then rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter));
-        }
-
-        return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
+        // Acquire concurrent stream permit (non-blocking queue-based)
+        return limiter.acquireAsync().thenCompose(v -> {
+            long rateDelay = limiter.acquireRateSlot();
+            if (rateDelay > 0) {
+                return delayAsync(rateDelay)
+                        .thenCompose(v2 -> executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter));
+            }
+            return executeRequestModelInternalAfterPermit(tempAgent, messagesWithUser, options, instance, limiter);
+        });
     }
 
     private CompletableFuture<ParsedResponse> executeRequestModelInternalAfterPermit(
@@ -938,21 +967,15 @@ public class UnifiedRequestService {
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
-        // First acquire concurrent stream permit
-        if (!limiter.tryAcquire()) {
-            logger.debug("⏳ No permit for {} - waiting", instance.getId());
-            return delayAsync(50)
-                    .thenCompose(v -> executeRequest(agent, userMessage, history, attempt));
-        }
-
-        // Then rate limit: non-blocking wait if too soon since last request on this instance
-        long rateDelay = limiter.acquireRateSlot();
-        if (rateDelay > 0) {
-            return delayAsync(rateDelay)
-                    .thenCompose(v -> executeRequestAfterPermit(agent, userMessage, history, instance, limiter));
-        }
-
-        return executeRequestAfterPermit(agent, userMessage, history, instance, limiter);
+        // Acquire concurrent stream permit (non-blocking queue-based)
+        return limiter.acquireAsync().thenCompose(v -> {
+            long rateDelay = limiter.acquireRateSlot();
+            if (rateDelay > 0) {
+                return delayAsync(rateDelay)
+                        .thenCompose(v2 -> executeRequestAfterPermit(agent, userMessage, history, instance, limiter));
+            }
+            return executeRequestAfterPermit(agent, userMessage, history, instance, limiter);
+        });
     }
 
     private CompletableFuture<ParsedResponse> executeRequestAfterPermit(
