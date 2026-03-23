@@ -78,6 +78,8 @@ public class HttpHelper {
 
     // ==================== HTTP METHODS ====================
 
+    private static final long DEFAULT_POST_TIMEOUT_MS = 120_000L;
+
     /**
      * Makes a POST request to an API endpoint.
      */
@@ -108,6 +110,18 @@ public class HttpHelper {
             Class<T> responseType,
             Map<String, String> pathParams,
             Map<String, String> extraHeaders) {
+        return post(instance, endpoint, model, requestBody, responseType, pathParams, extraHeaders, DEFAULT_POST_TIMEOUT_MS);
+    }
+
+    public <T> CompletableFuture<T> post(
+            Instance instance,
+            ProviderConfig.Endpoint endpoint,
+            String model,
+            Object requestBody,
+            Class<T> responseType,
+            Map<String, String> pathParams,
+            Map<String, String> extraHeaders,
+            long timeoutMs) {
 
         try {
             // Build URL
@@ -123,7 +137,7 @@ public class HttpHelper {
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .timeout(Duration.ofSeconds(120));
+                    .timeout(Duration.ofMillis(timeoutMs));
 
             // Add auth headers
             addAuthHeaders(requestBuilder, instance);
@@ -173,6 +187,15 @@ public class HttpHelper {
             ProviderConfig.Endpoint endpoint,
             String model,
             Object requestBody) {
+        return postRaw(instance, endpoint, model, requestBody, DEFAULT_POST_TIMEOUT_MS);
+    }
+
+    public CompletableFuture<String> postRaw(
+            Instance instance,
+            ProviderConfig.Endpoint endpoint,
+            String model,
+            Object requestBody,
+            long timeoutMs) {
 
         try {
             // Build URL
@@ -188,7 +211,7 @@ public class HttpHelper {
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .timeout(Duration.ofSeconds(120));
+                    .timeout(Duration.ofMillis(timeoutMs));
 
             // Add auth headers
             addAuthHeaders(requestBuilder, instance);

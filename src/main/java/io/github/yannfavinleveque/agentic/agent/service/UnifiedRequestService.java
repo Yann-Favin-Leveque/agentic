@@ -439,7 +439,8 @@ public class UnifiedRequestService {
                 instance,
                 ProviderConfig.Endpoint.RESPONSES,
                 agent.getModel(),
-                requestBody).thenApply(this::extractResponsesContentParsed);
+                requestBody,
+                agent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
     }
 
     private CompletableFuture<ParsedResponse> executeClaudeRequestWithImages(Agent agent, List<Message> messagesWithUser, Instance instance) {
@@ -809,7 +810,8 @@ public class UnifiedRequestService {
                 instance,
                 ProviderConfig.Endpoint.RESPONSES,
                 tempAgent.getModel(),
-                requestBody).thenApply(this::extractResponsesContentParsed);
+                requestBody,
+                tempAgent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
     }
 
     private CompletableFuture<ParsedResponse> executeClaudeRequestModelInternal(
@@ -1094,7 +1096,8 @@ public class UnifiedRequestService {
                 instance,
                 ProviderConfig.Endpoint.RESPONSES,
                 agent.getModel(),
-                requestBody).thenApply(this::extractResponsesContentParsed);
+                requestBody,
+                agent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
     }
 
     /**
