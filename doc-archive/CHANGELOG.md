@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.0] - 2026-04-09
+
+### Added — Token-budget conversation truncation
+
+New public method `ConversationManager.truncateByTokenBudget(String conversationId, int maxTokens)`
+that drops the oldest messages from a conversation until the sum of
+estimated tokens across the remaining messages is at most `maxTokens`, and
+a matching facade on `AgentService`:
+
+```java
+public int truncateConversationByTokenBudget(String conversationId, int maxTokens);
+```
+
+Token estimation uses the common OpenAI convention of
+`textContent.length() / 4`. Messages with a `null` text content are counted
+as zero tokens, so structural tool-result placeholders do not evict real
+content. Intended for token-budget-based memory schemes where the exact
+wire token count does not matter but overall bounded context does.
+
+Typical usage:
+
+```java
+// keep the conversation under ~4000 tokens of text
+int removed = agentService.truncateConversationByTokenBudget(convId, 4000);
+```
+
+Safe to call concurrently with an active autonomous loop on the same
+conversation — the runner re-reads history between iterations.
+
+Edge cases:
+- `maxTokens <= 0` clears the whole conversation (returns previous size).
+- Conversation already at or below budget is a no-op (returns 0).
+- Unknown/`null` conversation id is a no-op (returns 0).
+
+### Tests
+
+- `ConversationManagerTest` grows by 8 new unit tests covering the happy
+  path, exact-at-budget no-op, zero/negative budget clears, already-below
+  budget no-op, unknown/null conversation id, and the null-text-content
+  edge case.
+- Full suite: 117 tests, 0 failures, 0 errors.
+
+### Backwards compatibility
+
+- Pure addition. No existing method signature changed.
+
+---
+
 ## [1.13.0] - 2026-04-09
 
 ### Added — Conversation truncation

@@ -296,6 +296,73 @@ public class ConversationManager {
     }
 
     /**
+     * Drops the oldest messages from a conversation until the sum of estimated
+     * tokens across the remaining messages is at most {@code maxTokens}. Token
+     * counts are estimated using the common OpenAI convention of
+     * {@code textContent.length() / 4}; messages with a {@code null} text content
+     * are counted as zero tokens. Intended for token-budget-based memory
+     * compaction schemes where a higher-level summary (stored outside the
+     * conversation) replaces the dropped turns.
+     *
+     * <p>When {@code maxTokens} is zero or negative this behaves like
+     * {@link #clearHistory(String)} and returns the previous size. When the
+     * conversation is already at or below budget nothing is removed.
+     *
+     * @param conversationId Conversation ID
+     * @param maxTokens      Maximum total estimated tokens to keep
+     * @return Number of messages actually removed
+     */
+    public int truncateByTokenBudget(String conversationId, int maxTokens) {
+        if (conversationId == null) return 0;
+        List<Message> history = conversations.get(conversationId);
+        if (history == null) return 0;
+        if (history.isEmpty()) return 0;
+
+        if (maxTokens <= 0) {
+            int removed = history.size();
+            history.clear();
+            logger.debug("Truncated conversation {} by token budget: cleared all {} messages (budget <= 0)",
+                    conversationId, removed);
+            return removed;
+        }
+
+        // Walk backwards from the most recent message, accumulating token
+        // estimates until adding another message would exceed the budget.
+        int total = 0;
+        int keepFromIndex = history.size();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            int tokens = estimateTokens(history.get(i));
+            if (total + tokens > maxTokens) {
+                break;
+            }
+            total += tokens;
+            keepFromIndex = i;
+        }
+
+        if (keepFromIndex == 0) return 0;
+
+        int removed = keepFromIndex;
+        // Replace with a new ArrayList containing only the kept tail so external
+        // iterators holding references do not trip on concurrent removes.
+        List<Message> kept = new ArrayList<>(history.subList(keepFromIndex, history.size()));
+        history.clear();
+        history.addAll(kept);
+        logger.debug("Truncated conversation {} by token budget: removed {} messages, kept {} (~{} tokens, budget {})",
+                conversationId, removed, kept.size(), total, maxTokens);
+        return removed;
+    }
+
+    /**
+     * Estimates the token cost of a message using the OpenAI chars/4 rule.
+     * Messages with null text content count as 0 tokens.
+     */
+    private static int estimateTokens(Message message) {
+        String text = message.getTextContent();
+        if (text == null) return 0;
+        return text.length() / 4;
+    }
+
+    /**
      * Clears all messages from a conversation without deleting it.
      * Useful for retrying an autonomous loop from scratch while keeping the same conversation ID.
      *

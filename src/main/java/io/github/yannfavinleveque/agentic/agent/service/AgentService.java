@@ -222,6 +222,25 @@ public class AgentService {
         return conversationManager.truncateBefore(conversationId, keepLastN);
     }
 
+    /**
+     * Drops the oldest messages from a conversation until the sum of estimated
+     * tokens across the remaining messages is at most {@code maxTokens}.
+     * Intended for token-budget-based memory compaction schemes where a
+     * higher-level summary (stored outside the conversation) replaces the
+     * dropped turns. Unlike {@link #truncateConversation(String, int)}, this
+     * trims by estimated token count (chars / 4) instead of message count,
+     * which is more appropriate when message sizes vary widely. Safe to call
+     * concurrently with an active autonomous loop on the same conversation —
+     * the runner re-reads history between iterations.
+     *
+     * @param conversationId Conversation ID
+     * @param maxTokens      Maximum total estimated tokens to keep (0 or negative = clear all)
+     * @return Number of messages removed
+     */
+    public int truncateConversationByTokenBudget(String conversationId, int maxTokens) {
+        return conversationManager.truncateByTokenBudget(conversationId, maxTokens);
+    }
+
     // ==================== AGENT MANAGEMENT ====================
 
     /**
