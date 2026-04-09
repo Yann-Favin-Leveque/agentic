@@ -156,9 +156,45 @@ public class Agent {
     /**
      * Maximum number of iterations for autonomous mode loop.
      * Safety limit to prevent infinite loops. Default: 25.
+     * <p>
+     * Ignored when {@link #maxIterationsUnlimited} is {@code true}.
      */
     @Builder.Default
     private Integer maxIterations = 25;
+
+    /**
+     * When {@code true}, the autonomous loop never checks {@link #maxIterations}
+     * and runs until it is cancelled, errors out, or — if task_over is still
+     * enabled — the LLM calls {@code task_over}. The {@link #maxIterations}
+     * field is still readable but effectively ignored.
+     * <p>
+     * Useful for long-running "agent in an environment" setups (e.g. NPCs in
+     * a simulation) that must keep reacting to injected perception updates
+     * indefinitely.
+     * <p>
+     * Default: {@code false} — legacy behaviour (25-iteration safety limit).
+     */
+    @Builder.Default
+    private Boolean maxIterationsUnlimited = false;
+
+    /**
+     * When {@code true}, the library does NOT inject the {@code task_over}
+     * tool into this autonomous agent, does NOT append the "you must call
+     * task_over when done" instruction, and ignores any {@code task_over}
+     * call the model might still produce. The loop therefore never completes
+     * on its own — it only ends on cancellation, error, or
+     * {@link #maxIterations} (unless {@link #maxIterationsUnlimited} is also
+     * {@code true}).
+     * <p>
+     * Combine with {@link #maxIterationsUnlimited}{@code =true} for a truly
+     * immortal agent loop. Typical use: one autonomous agent per long-lived
+     * entity in a simulation, fed by
+     * {@link io.github.yannfavinleveque.agentic.agent.service.AgentService#insertMessage}.
+     * <p>
+     * Default: {@code false} — legacy behaviour (task_over is injected).
+     */
+    @Builder.Default
+    private Boolean disableTaskOver = false;
 
     /**
      * Maximum token count for tool output in autonomous mode.

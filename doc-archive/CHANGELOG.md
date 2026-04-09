@@ -2,6 +2,90 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.0] - 2026-04-09
+
+### Added — Optional flags for long-running autonomous agents
+
+Two new optional fields on `Agent` let an autonomous agent loop run
+indefinitely without self-terminating. Both default to `false`, so every
+existing agent JSON / builder call keeps its current behaviour.
+
+#### `disableTaskOver` (Boolean, default `false`)
+
+- When `true`, the library does **not** inject the `task_over` tool into the
+  autonomous virtual agent, does **not** append the "you must call task_over
+  when done" instruction, and ignores any `task_over` call the model might
+  still hallucinate (logs a warning and nudges the model to keep acting).
+- The loop therefore never completes on its own — it only ends on
+  cancellation, error, or reaching `maxIterations` (unless
+  `maxIterationsUnlimited=true` is also set).
+
+#### `maxIterationsUnlimited` (Boolean, default `false`)
+
+- When `true`, the iteration counter is not checked against `maxIterations`
+  at all. The loop runs until cancellation, error, or — if task_over is still
+  enabled — the LLM calls `task_over`.
+- `maxIterations` stays readable and is still logged for documentation
+  purposes even when unlimited mode is active.
+
+### Use case
+
+Long-lived "agent in an environment" setups: one autonomous agent per entity
+(an NPC in a simulation, a background worker reacting to events, …) fed by
+`AgentService.insertMessage` updates from another thread.
+
+```java
+Agent npc = Agent.builder()
+        .id("npc-alice")
+        .model("gpt-4o-mini")
+        .instructions("Control an NPC in a video game…")
+        .autonomous(true)
+        .disableTaskOver(true)          // never let the LLM end the loop
+        .maxIterationsUnlimited(true)   // no safety cap
+        .functions(verbTools)
+        .build();
+
+agentService.registerAgent(npc);
+String convId = agentService.createConversation();
+CompletableFuture<AgentResult> loop =
+        agentService.requestAgent("npc-alice", "You are alive.", convId, toolExecutor);
+
+// from another thread, at every tick of your simulation:
+agentService.insertMessage(convId, "user", "[TICK 1234] perception update...");
+
+// stop the agent from the outside when the simulation ends:
+loop.cancel(true);
+```
+
+### Changed
+
+- `AutonomousAgentRunner.buildVirtualAgent` is now package-private to enable
+  unit testing of the task_over injection logic.
+- New package-private helper
+  `AutonomousAgentRunner.isMaxIterationsExceeded(Agent, int, int)` centralises
+  the unlimited check and is directly unit-tested.
+- Startup log for autonomous agents now prints `"unlimited"` instead of the
+  numeric cap when `maxIterationsUnlimited=true`, and includes
+  `disableTaskOver` state.
+
+### Tests
+
+- New `AutonomousAgentRunnerTest` (6 unit tests) covers: default behaviour
+  (task_over injected + instruction + iteration check), `disableTaskOver=true`
+  (tool removed + instruction untouched), `maxIterationsUnlimited=true`
+  (iteration check never fires even at `Integer.MAX_VALUE`), and backwards-
+  compatibility defaults for legacy agents.
+- Full suite: 101 tests, 0 failures, 0 errors.
+
+### Backwards compatibility
+
+- Existing agent JSON files and builder calls that do not mention the new
+  fields behave exactly as in 1.11.3.
+- Both flags default to `false` via `@Builder.Default`, so Jackson
+  deserialisation of older JSON picks up the defaults automatically.
+
+---
+
 ## [3.31.0] - 2025-11-06
 
 ### Added

@@ -75,11 +75,13 @@ public class AutonomousAgentRunner {
                 : conversationId;
 
         int maxIterations = agent.getMaxIterations() != null ? agent.getMaxIterations() : 25;
+        boolean unlimited = Boolean.TRUE.equals(agent.getMaxIterationsUnlimited());
 
         // Build composite executor: lambda (priority) + config-based executors (fallback)
         ToolExecutor effectiveExecutor = buildCompositeExecutor(agent, toolExecutor);
 
-        // Build and register the virtual agent (autonomous=false, resultClass=null, task_over injected)
+        // Build and register the virtual agent (autonomous=false, resultClass=null, task_over injected
+        // unless disableTaskOver is set on the original agent)
         Agent virtualAgent = buildVirtualAgent(agent);
         agentManager.registerAgent(virtualAgent);
 
@@ -87,8 +89,12 @@ public class AutonomousAgentRunner {
         RetryConfig agentRetryConfig = agent.getRetryConfig() != null ? agent.getRetryConfig() : new RetryConfig();
         int maxIterationRetries = agentRetryConfig.resolveMaxIterationRetries(config.getDefaultRetryConfig());
 
-        logger.info("Starting autonomous loop for agent '{}' (virtualId={}, maxIterations={}, maxIterationRetries={}, conversation={})",
-                agent.getId(), virtualAgent.getId(), maxIterations, maxIterationRetries, convId);
+        logger.info("Starting autonomous loop for agent '{}' (virtualId={}, maxIterations={}, maxIterationRetries={}, disableTaskOver={}, conversation={})",
+                agent.getId(), virtualAgent.getId(),
+                unlimited ? "unlimited" : String.valueOf(maxIterations),
+                maxIterationRetries,
+                Boolean.TRUE.equals(agent.getDisableTaskOver()),
+                convId);
 
         // Accumulate token usage across all iterations (including retries)
         TokenUsage cumulativeUsage = new TokenUsage();
@@ -168,25 +174,43 @@ public class AutonomousAgentRunner {
     }
 
     /**
+     * Returns {@code true} when the loop should terminate because the
+     * iteration counter reached {@code maxIterations}. Always returns
+     * {@code false} when {@code originalAgent.maxIterationsUnlimited} is
+     * {@code true}. Package-private to allow unit testing.
+     */
+    static boolean isMaxIterationsExceeded(Agent originalAgent, int iteration, int maxIterations) {
+        if (Boolean.TRUE.equals(originalAgent.getMaxIterationsUnlimited())) {
+            return false;
+        }
+        return iteration >= maxIterations;
+    }
+
+    /**
      * Builds a virtual agent for the autonomous loop:
      * - autonomous=false (so requestAgent treats it as a normal agent)
      * - resultClass=null (no forced structured output)
-     * - task_over function injected
+     * - task_over function injected (unless {@code disableTaskOver=true} on the original)
      * - unique temporary ID to avoid collisions
+     *
+     * <p>Package-private so unit tests can exercise the task_over injection logic
+     * without spinning up a full AgentService + HTTP stack.
      */
-    private Agent buildVirtualAgent(Agent original) {
-        FunctionConfig taskOverFunc = buildTaskOverFunction(original);
+    Agent buildVirtualAgent(Agent original) {
+        boolean disableTaskOver = Boolean.TRUE.equals(original.getDisableTaskOver());
 
         List<FunctionConfig> functions = new ArrayList<>();
         if (original.getFunctions() != null) {
             functions.addAll(original.getFunctions());
         }
-        functions.add(taskOverFunc);
 
         String instructions = original.getInstructions() != null ? original.getInstructions() : "";
-        instructions += "\n\nWhen the task is fully complete, you MUST call the '"
-                + ToolBuilder.TASK_OVER_FUNCTION_NAME
-                + "' function with the final result. Do not simply respond with text when you are done.";
+        if (!disableTaskOver) {
+            functions.add(buildTaskOverFunction(original));
+            instructions += "\n\nWhen the task is fully complete, you MUST call the '"
+                    + ToolBuilder.TASK_OVER_FUNCTION_NAME
+                    + "' function with the final result. Do not simply respond with text when you are done.";
+        }
 
         return Agent.builder()
                 .id(original.getId() + "-autonomous-" + UUID.randomUUID().toString().substring(0, 8))
@@ -290,7 +314,7 @@ public class AutonomousAgentRunner {
                                                        ToolExecutor toolExecutor,
                                                        int iteration, int maxIterations,
                                                        TokenUsage cumulativeUsage) {
-        if (iteration >= maxIterations) {
+        if (isMaxIterationsExceeded(originalAgent, iteration, maxIterations)) {
             return CompletableFuture.failedFuture(new AgentException(
                     AgentException.ErrorCode.MAX_ITERATIONS_EXCEEDED,
                     "Autonomous agent '" + originalAgent.getId()
@@ -405,10 +429,23 @@ public class AutonomousAgentRunner {
                 Message.assistantWithToolCalls(result.getContent(), calls));
 
         Integer maxTokens = originalAgent.getMaxToolTokenOutput();
+        boolean disableTaskOver = Boolean.TRUE.equals(originalAgent.getDisableTaskOver());
         AgentResult taskOverResult = null;
 
         for (FunctionCall call : calls) {
             if (ToolBuilder.TASK_OVER_FUNCTION_NAME.equals(call.getName())) {
+                if (disableTaskOver) {
+                    // Agent was configured with disableTaskOver=true: task_over was not
+                    // advertised as a tool. If the model hallucinates a call to it, we reject
+                    // the call and nudge the model to keep acting instead of completing.
+                    logger.warn("Agent '{}' emitted task_over at iteration {} despite disableTaskOver=true — ignoring and continuing the loop",
+                            originalAgent.getId(), iteration);
+                    conversationManager.addMessage(convId,
+                            Message.toolResult(call.getId(), call.getName(),
+                                    "Error: task_over is not available for this agent. "
+                                            + "Keep acting via the other tools — the loop will only end on external cancellation."));
+                    continue;
+                }
                 logger.info("Agent '{}' called task_over at iteration {}",
                         originalAgent.getId(), iteration);
                 taskOverResult = deserializeTaskOverResult(call, originalAgent);
