@@ -266,6 +266,36 @@ public class ConversationManager {
     }
 
     /**
+     * Keeps only the {@code keepLastN} most recent messages of a conversation
+     * and drops the older ones. Useful for token-budget-based memory compaction
+     * where a higher-level summary replaces the dropped context.
+     *
+     * <p>When {@code keepLastN} is zero or negative, this behaves like
+     * {@link #clearHistory(String)}. When it is larger than the current
+     * conversation size, nothing is removed.
+     *
+     * @param conversationId Conversation ID
+     * @param keepLastN      Number of most recent messages to preserve
+     * @return Number of messages actually removed
+     */
+    public int truncateBefore(String conversationId, int keepLastN) {
+        if (conversationId == null) return 0;
+        List<Message> history = conversations.get(conversationId);
+        if (history == null) return 0;
+        int toKeep = Math.max(0, keepLastN);
+        if (history.size() <= toKeep) return 0;
+        int removed = history.size() - toKeep;
+        // Replace with a new ArrayList containing only the last N messages so
+        // external iterators holding references do not trip on concurrent removes.
+        List<Message> kept = new ArrayList<>(history.subList(removed, history.size()));
+        history.clear();
+        history.addAll(kept);
+        logger.debug("Truncated conversation {}: removed {} messages, kept last {}",
+                conversationId, removed, toKeep);
+        return removed;
+    }
+
+    /**
      * Clears all messages from a conversation without deleting it.
      * Useful for retrying an autonomous loop from scratch while keeping the same conversation ID.
      *

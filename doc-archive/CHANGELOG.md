@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.13.0] - 2026-04-09
+
+### Added — Conversation truncation
+
+New public method `ConversationManager.truncateBefore(String conversationId, int keepLastN)`
+that drops all messages from a conversation except the most recent `keepLastN`,
+and a matching facade on `AgentService`:
+
+```java
+public int truncateConversation(String conversationId, int keepLastN);
+```
+
+Intended for token-budget-based memory schemes where a higher-level summary
+(stored outside the conversation) replaces the dropped turns. Typical usage:
+
+```java
+// after the summary has been written elsewhere
+int removed = agentService.truncateConversation(convId, 10);
+```
+
+Safe to call concurrently with an active autonomous loop on the same
+conversation — the runner re-reads history between iterations.
+
+Edge cases:
+- `keepLastN <= 0` is treated as a full clear (returns size removed).
+- `keepLastN >= history.size()` is a no-op (returns 0).
+- Unknown/`null` conversation id is a no-op (returns 0).
+
+### Tests
+
+- New `ConversationManagerTest` (8 unit tests) covering truncation,
+  edge cases (zero, negative, oversized keep, unknown conv) and the fact
+  that the conversation remains writable after a truncate.
+- Full suite: 109 tests, 0 failures, 0 errors.
+
+### Backwards compatibility
+
+- Pure addition. No existing method signature changed.
+
+---
+
 ## [1.12.0] - 2026-04-09
 
 ### Added — Optional flags for long-running autonomous agents

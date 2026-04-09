@@ -206,6 +206,22 @@ public class AgentService {
         return conversationManager.getHistory(conversationId);
     }
 
+    /**
+     * Drops all messages except the {@code keepLastN} most recent ones from a
+     * conversation. Intended for token-budget-based memory compaction schemes
+     * where a higher-level summary (stored outside the conversation) replaces
+     * the older turns. Safe to call concurrently with an active autonomous
+     * loop on the same conversation — the runner re-reads history between
+     * iterations.
+     *
+     * @param conversationId Conversation ID
+     * @param keepLastN      Number of most recent messages to preserve (0 = clear all)
+     * @return Number of messages removed
+     */
+    public int truncateConversation(String conversationId, int keepLastN) {
+        return conversationManager.truncateBefore(conversationId, keepLastN);
+    }
+
     // ==================== AGENT MANAGEMENT ====================
 
     /**
