@@ -335,6 +335,18 @@ public class AutonomousAgentRunner {
             }
         }
 
+        // Per-iteration token-budget truncation — runs AFTER compaction so the
+        // cheaper compaction step gets a chance to shrink bulky tool results
+        // first; any remaining over-budget messages are then dropped oldest-first.
+        Integer maxTokens = originalAgent.getMaxConversationTokens();
+        if (maxTokens != null && maxTokens > 0) {
+            int removed = conversationManager.truncateByTokenBudget(convId, maxTokens);
+            if (removed > 0) {
+                logger.info("Per-iteration truncation for agent '{}' at iteration {}: removed {} messages (budget {} tokens)",
+                        originalAgent.getId(), iteration, removed, maxTokens);
+            }
+        }
+
         // Call the REAL requestAgent → goes through permits, retries, rate limiting.
         // First iteration: use conversationId overload (adds userMessage + assistant response to conversation).
         // Subsequent iterations: use history overload (stateless), then manually store assistant response

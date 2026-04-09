@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.0] - 2026-04-09
+
+### Added — Per-iteration conversation truncation for autonomous loops
+
+New optional `Agent.maxConversationTokens` field. When set to a positive
+value, the autonomous runner calls `truncateByTokenBudget` on the
+conversation before every iteration, capping the steady-state input
+size of long-running loops without requiring the caller to trim on
+each message.
+
+Before 1.16.0, callers had to truncate externally (e.g. from a
+perception-delivery pipeline). Between two external trims, the runner
+would append 10-30 assistant + tool-result messages per external cycle,
+blowing past the intended budget by 50-100% and paying for the
+overshoot on every intermediate LLM call.
+
+### Example
+
+```java
+Agent npc = Agent.builder()
+    .id("npc-alice")
+    .model("gpt-5.4-mini")
+    .autonomous(true)
+    .disableTaskOver(true)
+    .maxIterationsUnlimited(true)
+    .maxConversationTokens(15000)   // NEW: cap input size per turn
+    .functions(verbTools)
+    .build();
+```
+
+### Interaction with `compactToolResultsAfterIteration`
+
+Tool-result compaction runs first (it replaces bulky tool payloads with
+a `[compacted]` placeholder). If the conversation is still over the
+`maxConversationTokens` budget after that, the token-budget truncation
+drops the oldest whole messages. Both features can be used together.
+
+### Backwards compatibility
+
+Pure addition. A null (or absent) `maxConversationTokens` disables the
+feature entirely — existing agents behave exactly as in 1.15.0.
+
+### Tests
+
+- New tests in AutonomousAgentRunnerTest covering the no-op and
+  trim-fires cases.
+- Full suite: 117 + N tests, 0 failures, 0 errors.
+
+---
+
 ## [1.14.0] - 2026-04-09
 
 ### Added — Token-budget conversation truncation

@@ -224,6 +224,22 @@ public class Agent {
     private Integer compactKeepLastNIterations = 1;
 
     /**
+     * When set to a positive value, the autonomous loop truncates the
+     * conversation to this many estimated tokens BEFORE each iteration's
+     * LLM call, via {@code ConversationManager.truncateByTokenBudget}. This
+     * caps the steady-state conversation size inside long-running loops
+     * (e.g. immortal NPC loops fed by external insertMessage calls) and
+     * prevents runaway input cost.
+     *
+     * <p>Interacts with {@link #compactToolResultsAfterIteration}: that
+     * compaction runs first (it clears bulky tool-result bodies); if the
+     * conversation is still over {@code maxConversationTokens} after
+     * compaction, the oldest whole messages are dropped until the budget
+     * fits. A null value disables the feature (legacy behaviour).
+     */
+    private Integer maxConversationTokens;
+
+    /**
      * Reasoning effort level for the agent.
      * null or "none" = no reasoning. "low"/"medium"/"high" = reasoning with effort level.
      * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).

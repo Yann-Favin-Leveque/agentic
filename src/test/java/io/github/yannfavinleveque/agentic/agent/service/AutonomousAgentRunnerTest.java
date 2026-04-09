@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Unit tests for the optional {@code disableTaskOver} and
@@ -149,6 +150,90 @@ class AutonomousAgentRunnerTest {
                 "disableTaskOver must default to false for legacy agents");
         assertFalse(Boolean.TRUE.equals(agent.getMaxIterationsUnlimited()),
                 "maxIterationsUnlimited must default to false for legacy agents");
+        assertNull(agent.getMaxConversationTokens(),
+                "maxConversationTokens must default to null (disabled) for legacy agents");
+    }
+
+    // ============================================================
+    // maxConversationTokens — per-iteration truncation (OPT-1, 1.16.0)
+    // ============================================================
+    //
+    // These tests exercise the exact call the runner makes inside
+    // executeLoop: conversationManager.truncateByTokenBudget(convId, budget).
+    // They avoid standing up a full AgentService + HTTP stack, which would
+    // be needed to drive a real iteration — per the worker prompt this level
+    // of unit coverage is sufficient and the integration is covered
+    // downstream by the agent_simulation smoke test.
+
+    @Test
+    void perIterationTruncation_isNoOpWhenUnderBudget() {
+        Agent agent = Agent.builder()
+                .id("npc-under-budget")
+                .model("gpt-4o")
+                .autonomous(true)
+                .maxIterationsUnlimited(true)
+                .disableTaskOver(true)
+                .maxConversationTokens(10_000)
+                .build();
+
+        ConversationManager cm = new ConversationManager();
+        String convId = cm.createConversation();
+        // Five small assistant messages — well under 10k tokens
+        for (int i = 0; i < 5; i++) {
+            cm.addAssistantMessage(convId, "short message #" + i);
+        }
+        int sizeBefore = cm.getHistory(convId).size();
+        assertEquals(5, sizeBefore, "precondition: conversation seeded with 5 messages");
+
+        int removed = cm.truncateByTokenBudget(convId, agent.getMaxConversationTokens());
+
+        assertEquals(0, removed,
+                "under-budget conversation must not lose any messages");
+        assertEquals(5, cm.getHistory(convId).size(),
+                "under-budget conversation size must be unchanged");
+    }
+
+    @Test
+    void perIterationTruncation_fires_whenOverBudget() {
+        Agent agent = Agent.builder()
+                .id("npc-over-budget")
+                .model("gpt-4o")
+                .autonomous(true)
+                .maxIterationsUnlimited(true)
+                .disableTaskOver(true)
+                .maxConversationTokens(200)
+                .build();
+
+        ConversationManager cm = new ConversationManager();
+        String convId = cm.createConversation();
+
+        // 10 large assistant messages, ~100 estimated tokens each
+        // (estimateTokens uses chars/4 + small overhead per message; 400 chars ≈ 100 tokens).
+        String bigPayload = repeat('a', 400);
+        for (int i = 0; i < 10; i++) {
+            cm.addAssistantMessage(convId, bigPayload);
+        }
+        int sizeBefore = cm.getHistory(convId).size();
+        assertEquals(10, sizeBefore, "precondition: conversation seeded with 10 large messages");
+
+        int removed = cm.truncateByTokenBudget(convId, agent.getMaxConversationTokens());
+
+        assertTrue(removed > 0,
+                "over-budget conversation must drop at least one message");
+        int sizeAfter = cm.getHistory(convId).size();
+        assertTrue(sizeAfter < sizeBefore,
+                "conversation size must shrink after truncation");
+        // Sanity check: the remaining messages' estimated token cost must be ≤ budget.
+        // A second call with the same budget is a no-op on a now-in-budget conversation.
+        int secondRemoved = cm.truncateByTokenBudget(convId, agent.getMaxConversationTokens());
+        assertEquals(0, secondRemoved,
+                "after truncation the conversation must already be within budget");
+    }
+
+    private static String repeat(char c, int n) {
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) sb.append(c);
+        return sb.toString();
     }
 
     // ============================================================
