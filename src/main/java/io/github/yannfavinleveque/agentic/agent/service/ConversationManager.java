@@ -1,5 +1,6 @@
 package io.github.yannfavinleveque.agentic.agent.service;
 
+import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
 import io.github.yannfavinleveque.agentic.agent.model.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -347,19 +348,55 @@ public class ConversationManager {
         List<Message> kept = new ArrayList<>(history.subList(keepFromIndex, history.size()));
         history.clear();
         history.addAll(kept);
-        logger.debug("Truncated conversation {} by token budget: removed {} messages, kept {} (~{} tokens, budget {})",
+        logger.info("Truncated conversation {} by token budget: removed {} messages, kept {} (~{} tokens, budget {})",
                 conversationId, removed, kept.size(), total, maxTokens);
         return removed;
     }
 
     /**
      * Estimates the token cost of a message using the OpenAI chars/4 rule.
-     * Messages with null text content count as 0 tokens.
+     *
+     * <p>Counts every payload field that the LLM sees: plain text content,
+     * multimodal text parts, and assistant tool-call arguments. Tool-call
+     * heavy conversations would otherwise be massively underestimated, since
+     * an {@code assistant} message that only carries {@code functionCalls} has
+     * a {@code null} {@code textContent} but still costs real tokens for the
+     * function name + arguments JSON. We add a small per-message overhead for
+     * role/structural framing so the budget stays conservative.
      */
     private static int estimateTokens(Message message) {
+        if (message == null) return 0;
+        int chars = 0;
+
+        // Plain text body (also covers tool-result messages, which keep their
+        // result in textContent).
         String text = message.getTextContent();
-        if (text == null) return 0;
-        return text.length() / 4;
+        if (text != null) chars += text.length();
+
+        // Multimodal text parts.
+        if (message.getContentParts() != null) {
+            for (Message.ContentPart part : message.getContentParts()) {
+                if (part != null && part.getText() != null) {
+                    chars += part.getText().length();
+                }
+            }
+        }
+
+        // Assistant function_call payload (name + arguments JSON).
+        if (message.getFunctionCalls() != null) {
+            for (FunctionCall call : message.getFunctionCalls()) {
+                if (call == null) continue;
+                if (call.getName() != null) chars += call.getName().length();
+                if (call.getArguments() != null) chars += call.getArguments().length();
+            }
+        }
+
+        // Tool-result framing (call id + tool name).
+        if (message.getToolCallId() != null) chars += message.getToolCallId().length();
+        if (message.getToolName() != null) chars += message.getToolName().length();
+
+        // ~4 tokens of structural framing per message (role, separators).
+        return (chars / 4) + 4;
     }
 
     /**

@@ -46,6 +46,14 @@ public class RetryConfig {
     public static final int DEFAULT_MAX_TOKEN_RETRIES = 1;
     public static final int DEFAULT_DESERIALIZATION_RETRIES = 1;
     public static final int DEFAULT_MAX_ITERATION_RETRIES = 1;
+    /**
+     * Default retries for content-filter 400 errors. Set to a small positive
+     * value so the round-robin can try a different LLM instance — Azure regions
+     * have varying filter strictness, and a prompt that trips one endpoint may
+     * be accepted by another. Capped to avoid wasting tokens when the prompt
+     * itself is the problem.
+     */
+    public static final int DEFAULT_CONTENT_FILTER_RETRIES = 3;
 
     /**
      * Retries for network/infrastructure errors (429 rate limit, 502, timeout, 5xx).
@@ -81,6 +89,16 @@ public class RetryConfig {
     @JsonProperty("maxIterationRetries")
     @JsonAlias("max_iteration_retries")
     private Integer maxIterationRetries;
+
+    /**
+     * Retries for content-filter 400 errors (Azure responsible-AI policy and
+     * similar). The intent is to round-robin to a different LLM instance that
+     * may have looser filtering. Default: 3. Set to 0 to preserve the legacy
+     * "fail immediately on content filter" behaviour.
+     */
+    @JsonProperty("contentFilterRetries")
+    @JsonAlias("content_filter_retries")
+    private Integer contentFilterRetries;
 
     /**
      * Resolves the effective retry count for network errors, falling back through the chain.
@@ -119,5 +137,14 @@ public class RetryConfig {
         if (maxIterationRetries != null) return maxIterationRetries;
         if (globalDefault != null && globalDefault.getMaxIterationRetries() != null) return globalDefault.getMaxIterationRetries();
         return DEFAULT_MAX_ITERATION_RETRIES;
+    }
+
+    /**
+     * Resolves the effective retry count for content-filter errors, falling back through the chain.
+     */
+    public int resolveContentFilterRetries(RetryConfig globalDefault) {
+        if (contentFilterRetries != null) return contentFilterRetries;
+        if (globalDefault != null && globalDefault.getContentFilterRetries() != null) return globalDefault.getContentFilterRetries();
+        return DEFAULT_CONTENT_FILTER_RETRIES;
     }
 }

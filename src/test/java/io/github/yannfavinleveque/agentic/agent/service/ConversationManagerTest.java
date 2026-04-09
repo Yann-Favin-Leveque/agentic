@@ -144,9 +144,11 @@ class ConversationManagerTest {
 
     @Test
     void truncateByTokenBudget_exactlyAtBudgetIsNoop() {
-        // 5 messages * 400 chars = ~100 tokens each, ~500 total
+        // 5 messages * 400 chars = (400/4 + 4) = 104 tokens each, ~520 total.
+        // The +4 per-message structural framing was added to estimateTokens
+        // alongside the function-call accounting fix; budget the test to match.
         seedWithFixedSizeMessages(5, 400);
-        int removed = manager.truncateByTokenBudget(convId, 500);
+        int removed = manager.truncateByTokenBudget(convId, 520);
         assertEquals(0, removed);
         assertEquals(5, manager.getMessageCount(convId));
     }
@@ -186,36 +188,36 @@ class ConversationManagerTest {
     }
 
     @Test
-    void truncateByTokenBudget_nullTextContentMessagesAreIgnored() {
-        // Fresh 3 heavy messages, with a null-content message injected in the middle.
+    void truncateByTokenBudget_nullTextContentMessagesAreLight() {
+        // Each heavy message costs (400/4) + 4 = 104 tokens; a null-text
+        // message costs only the +4 framing. Layout, oldest first:
+        //   idx 0 heavy   (104)
+        //   idx 1 null    (  4)
+        //   idx 2 heavy   (104)
+        //   idx 3 heavy   (104)  ← newest
         manager = new ConversationManager();
         convId = manager.createConversation();
         char[] chars = new char[400];
         for (int j = 0; j < chars.length; j++) chars[j] = 'x';
-        String heavy = new String(chars); // ~100 tokens
+        String heavy = new String(chars);
 
-        manager.addAssistantMessage(convId, heavy);                                // oldest, ~100 tokens
-        manager.addMessage(convId, Message.builder().role("assistant").content((String) null).build()); // 0 tokens
-        manager.addAssistantMessage(convId, heavy);                                // ~100 tokens
-        manager.addAssistantMessage(convId, heavy);                                // newest, ~100 tokens
+        manager.addAssistantMessage(convId, heavy);
+        manager.addMessage(convId, Message.builder().role("assistant").content((String) null).build());
+        manager.addAssistantMessage(convId, heavy);
+        manager.addAssistantMessage(convId, heavy);
         assertEquals(4, manager.getMessageCount(convId));
 
-        // Budget = 200 tokens. The two newest heavy messages (~200 tokens) fit
-        // exactly; the null-content message in between counts as 0 tokens and
-        // should be kept for free, but only if it sits inside the kept tail.
-        // Walking backwards: newest (100) + second newest (100) = 200, adding
-        // the null message keeps total at 200, adding the oldest heavy would
-        // overflow to 300. Expected result: 1 message removed (the oldest
-        // heavy), 3 kept.
-        int removed = manager.truncateByTokenBudget(convId, 200);
+        // Budget = 220 tokens. Walking backwards from the newest:
+        //   newest heavy            104  ✔ keep (cum=104)
+        //   second-newest heavy     104  ✔ keep (cum=208)
+        //   null-content message      4  ✔ keep (cum=212)
+        //   oldest heavy            104  → cum=316 > 220, break.
+        // Expected: 1 removed, 3 kept (the null is kept "almost free").
+        int removed = manager.truncateByTokenBudget(convId, 220);
         assertEquals(1, removed, "only the oldest heavy message should be removed");
         assertEquals(3, manager.getMessageCount(convId));
 
         List<Message> kept = manager.getHistory(convId);
-        // After dropping the oldest heavy message, the null-content message
-        // now sits at the head of the kept tail, followed by the two heavy
-        // ones — the null message is counted as 0 tokens so it does not
-        // evict any real content.
         assertEquals(null, kept.get(0).getTextContent());
         assertEquals(heavy, kept.get(1).getTextContent());
         assertEquals(heavy, kept.get(2).getTextContent());

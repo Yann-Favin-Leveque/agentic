@@ -1496,18 +1496,29 @@ public class UnifiedRequestService {
     private int getMaxRetriesForError(Throwable e, Agent agent) {
         String message = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
 
-        // Never retry content filter or 4xx errors (except rate limits)
+        RetryConfig agentRetryConfig = agent != null ? agent.getRetryConfig() : null;
+        RetryConfig effectiveConfig = agentRetryConfig != null ? agentRetryConfig : new RetryConfig();
+        RetryConfig globalDefault = config.getDefaultRetryConfig();
+
+        // Content-filter 400s: retry up to contentFilterRetries times. The
+        // intent is to round-robin to a different LLM instance — Azure regions
+        // have varying responsible-AI strictness, and a prompt that trips one
+        // endpoint may be accepted by another. Capped so a genuinely
+        // unsafe prompt does not waste tokens across all instances.
         if (message.contains("content_filter") || message.contains("content filter")) {
-            return -1;
+            int configured = effectiveConfig.resolveContentFilterRetries(globalDefault);
+            if (configured <= 0) return -1;
+            // Cap at the number of compatible instances minus one (since we already
+            // burned one attempt), so we walk every endpoint at most once.
+            int compatible = countCompatibleInstances(agent);
+            if (compatible <= 1) return -1;
+            return Math.min(configured, compatible - 1);
         }
+        // Other 4xx errors (except 429 rate limit) are deterministic — never retry.
         if ((message.contains("400") || message.contains("401") || message.contains("403"))
                 && !message.contains("429")) {
             return -1;
         }
-
-        RetryConfig agentRetryConfig = agent != null ? agent.getRetryConfig() : null;
-        RetryConfig effectiveConfig = agentRetryConfig != null ? agentRetryConfig : new RetryConfig();
-        RetryConfig globalDefault = config.getDefaultRetryConfig();
 
         // Classify error type and return appropriate max retries
         if (e instanceof AgentException) {
@@ -1544,6 +1555,26 @@ public class UnifiedRequestService {
         }
 
         return config.getRetryBaseDelayMs() * (long) Math.pow(2, attempt);
+    }
+
+    /**
+     * Counts how many configured LLM instances expose the agent's model.
+     * Returns 0 when {@code agent} or its model is null. Used by
+     * {@link #getMaxRetriesForError(Throwable, Agent)} to bound content-filter
+     * retries to "every endpoint at most once".
+     */
+    private int countCompatibleInstances(Agent agent) {
+        if (agent == null || agent.getModel() == null || instanceRouter.isDegradedMode()) {
+            return 0;
+        }
+        String model = agent.getModel();
+        int count = 0;
+        for (io.github.yannfavinleveque.agentic.agent.core.Instance inst : instanceRouter.getInstances()) {
+            if (inst.getDeployedModels().contains(model)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
