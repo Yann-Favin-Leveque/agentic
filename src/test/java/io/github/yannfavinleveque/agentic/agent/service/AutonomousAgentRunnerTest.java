@@ -237,6 +237,70 @@ class AutonomousAgentRunnerTest {
     }
 
     // ============================================================
+    // minIterationIntervalMs — throttle delay helper (OPT-2, 1.17.0)
+    // ============================================================
+    //
+    // The runner's inter-iteration throttle logic is centralised in the
+    // package-private static helper computeThrottleDelayMs. These tests drive
+    // it directly with synthetic timestamps — no AgentService, no real clock,
+    // no LLM. The integration into executeLoop is only a one-line Thread.sleep
+    // around the helper's return value, covered end-to-end by the
+    // agent_simulation smoke test.
+
+    @Test
+    void throttle_nullMinInterval_returnsZero() {
+        // null interval => feature disabled => never sleep
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(null, 1_000L, 1_500L),
+                "null minIterationIntervalMs must disable throttling");
+    }
+
+    @Test
+    void throttle_zeroMinInterval_returnsZero() {
+        // 0 or negative interval => feature disabled => never sleep
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(0, 1_000L, 1_500L),
+                "zero minIterationIntervalMs must disable throttling");
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(-10, 1_000L, 1_500L),
+                "negative minIterationIntervalMs must disable throttling");
+    }
+
+    @Test
+    void throttle_firstIteration_returnsZero() {
+        // previousIterationStartMs == 0 is the first-iteration sentinel: never delay
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(1_000, 0L, 5_000L),
+                "first iteration (previousIterationStartMs == 0) must not be delayed");
+    }
+
+    @Test
+    void throttle_fastIteration_returnsRemainingTime() {
+        // Previous iteration started 200 ms ago, budget is 1000 ms → wait 800 ms
+        assertEquals(800L,
+                AutonomousAgentRunner.computeThrottleDelayMs(1_000, 1_000L, 1_200L),
+                "fast iteration must wait the remaining budget");
+    }
+
+    @Test
+    void throttle_slowIteration_returnsZero() {
+        // Previous iteration took 2000 ms, budget is 1000 ms → do not sleep a negative
+        // amount, fire immediately (a slow iteration never adds extra wait on top).
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(1_000, 1_000L, 3_000L),
+                "slow iteration that exceeded the budget must not sleep");
+    }
+
+    @Test
+    void throttle_exactlyAtInterval_returnsZero() {
+        // Previous iteration started exactly minIntervalMs ago → the budget is
+        // already fully consumed, no remaining delay.
+        assertEquals(0L,
+                AutonomousAgentRunner.computeThrottleDelayMs(1_000, 1_000L, 2_000L),
+                "exactly-at-budget must return zero, not sleep for a full tick");
+    }
+
+    // ============================================================
     // Helpers
     // ============================================================
 

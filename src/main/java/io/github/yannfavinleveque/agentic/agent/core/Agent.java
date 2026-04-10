@@ -240,6 +240,25 @@ public class Agent {
     private Integer maxConversationTokens;
 
     /**
+     * When set to a positive value, the autonomous loop sleeps before each
+     * iteration so that at least this many milliseconds have elapsed since
+     * the START of the previous iteration. Caps the throughput of
+     * long-running immortal loops that would otherwise burn through the LLM
+     * rate limiter at 10-30 iterations per second doing low-value tool calls
+     * (think, wait, pings).
+     *
+     * <p>The first iteration is never delayed. The delay is enforced using
+     * {@code Thread.sleep} on the runner's own worker thread — it does not
+     * hold any permit or conversation lock during the wait, so other agents
+     * and external producers (e.g. {@code insertMessage} callers) are not
+     * blocked.
+     *
+     * <p>A null or non-positive value disables the feature (legacy behaviour:
+     * the loop runs as fast as the LLM API responds).
+     */
+    private Integer minIterationIntervalMs;
+
+    /**
      * Reasoning effort level for the agent.
      * null or "none" = no reasoning. "low"/"medium"/"high" = reasoning with effort level.
      * "enabled" = reasoning with default effort (medium for OpenAI, enabled for Claude).

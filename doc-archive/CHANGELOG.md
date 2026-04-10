@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.0] - 2026-04-10
+
+### Added — Minimum interval between autonomous loop iterations
+
+New optional `Agent.minIterationIntervalMs` field. When set to a positive
+value, the autonomous runner enforces at least that many milliseconds
+between the START of two consecutive iterations by sleeping
+(`Thread.sleep`) on its own worker thread before launching the next
+iteration.
+
+Before 1.17.0, an immortal autonomous loop with
+`maxIterationsUnlimited=true` and `disableTaskOver=true` could run at
+10-30 iterations per second for fast-responding models, burning cost on
+low-value tool calls (think, wait, status pings). Callers that want a
+natural "one action per X seconds" rhythm can now set
+`minIterationIntervalMs` instead of hacking throttles around the loop.
+
+### Example
+
+```java
+Agent npc = Agent.builder()
+    .id("npc-alice")
+    .model("gpt-5.4-mini")
+    .autonomous(true)
+    .disableTaskOver(true)
+    .maxIterationsUnlimited(true)
+    .maxConversationTokens(15000)       // 1.16.0
+    .minIterationIntervalMs(1000)       // NEW: at most ~1 iteration/sec
+    .functions(verbTools)
+    .build();
+```
+
+### Semantics
+
+- Measured from iteration-start to iteration-start, NOT end to start.
+  A slow iteration that takes longer than the budget does not add an
+  extra delay — the next iteration fires immediately.
+- The first iteration is never delayed.
+- Sleep is cooperative: `Thread.sleep` on the runner's worker thread;
+  no permit, lock or conversation is held during the wait.
+- Interruption during the sleep fails the loop future with the
+  InterruptedException (Thread.currentThread().interrupt() is called
+  first to preserve the interrupted status).
+
+### Tests
+
+- New package-private helper
+  `AutonomousAgentRunner.computeThrottleDelayMs(Integer, long, long)`
+  centralises the timing logic and is directly unit-tested.
+- Six new tests in AutonomousAgentRunnerTest covering null interval,
+  zero interval, first iteration, fast iteration (delay remaining),
+  slow iteration (no delay), and the exact boundary.
+- Full suite: 125 tests, 0 failures, 0 errors (25 integration tests
+  still gated on RUN_INTEGRATION_TESTS).
+
+### Backwards compatibility
+
+Pure addition. A null (or absent) `minIterationIntervalMs` disables the
+feature entirely — existing agents behave exactly as in 1.16.0.
+
+---
+
 ## [1.16.0] - 2026-04-09
 
 ### Added — Per-iteration conversation truncation for autonomous loops

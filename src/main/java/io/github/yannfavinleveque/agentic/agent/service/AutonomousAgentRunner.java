@@ -187,6 +187,25 @@ public class AutonomousAgentRunner {
     }
 
     /**
+     * Computes how long the autonomous loop should sleep before starting the
+     * next iteration so that at least {@code minIntervalMs} milliseconds have
+     * elapsed since the start of the previous iteration. The feature is
+     * disabled (returns 0) when {@code minIntervalMs} is null or non-positive,
+     * or when {@code previousIterationStartMs} is 0 (first iteration).
+     * Returns 0 rather than a negative value when the previous iteration
+     * already took longer than the budget — a slow iteration never adds an
+     * extra wait on top of itself. Package-private for tests.
+     */
+    static long computeThrottleDelayMs(Integer minIntervalMs, long previousIterationStartMs, long nowMs) {
+        if (minIntervalMs == null || minIntervalMs <= 0 || previousIterationStartMs <= 0) {
+            return 0;
+        }
+        long elapsed = nowMs - previousIterationStartMs;
+        long remaining = minIntervalMs - elapsed;
+        return Math.max(0, remaining);
+    }
+
+    /**
      * Builds a virtual agent for the autonomous loop:
      * - autonomous=false (so requestAgent treats it as a normal agent)
      * - resultClass=null (no forced structured output)
@@ -276,7 +295,7 @@ public class AutonomousAgentRunner {
                                                                  ToolExecutor toolExecutor,
                                                                  int maxIterations, TokenUsage cumulativeUsage,
                                                                  int retryAttempt, int maxRetries) {
-        return executeLoop(virtualAgent, originalAgent, convId, userMessage, toolExecutor, 0, maxIterations, cumulativeUsage)
+        return executeLoop(virtualAgent, originalAgent, convId, userMessage, toolExecutor, 0, maxIterations, cumulativeUsage, 0L)
                 .handle((result, error) -> {
                     if (error == null) {
                         return CompletableFuture.completedFuture(result);
@@ -308,18 +327,46 @@ public class AutonomousAgentRunner {
     /**
      * The loop: call requestAgent → handle response → repeat.
      * Each iteration goes through the full AgentService.requestAgent() pipeline (permits, retries, etc).
+     *
+     * @param previousIterationStartMs wall-clock start time of the previous
+     *     iteration (via {@link System#currentTimeMillis()}), or {@code 0}
+     *     for the very first iteration. Used by the optional
+     *     {@code minIterationIntervalMs} throttle to measure the inter-iteration
+     *     delay start-to-start rather than end-to-start.
      */
     private CompletableFuture<AgentResult> executeLoop(Agent virtualAgent, Agent originalAgent,
                                                        String convId, String userMessage,
                                                        ToolExecutor toolExecutor,
                                                        int iteration, int maxIterations,
-                                                       TokenUsage cumulativeUsage) {
+                                                       TokenUsage cumulativeUsage,
+                                                       long previousIterationStartMs) {
         if (isMaxIterationsExceeded(originalAgent, iteration, maxIterations)) {
             return CompletableFuture.failedFuture(new AgentException(
                     AgentException.ErrorCode.MAX_ITERATIONS_EXCEEDED,
                     "Autonomous agent '" + originalAgent.getId()
                             + "' exceeded max iterations (" + maxIterations + ")"));
         }
+
+        // Optional throttle: enforce a minimum interval between iteration
+        // starts. First iteration is never delayed (previousIterationStartMs==0
+        // short-circuits computeThrottleDelayMs to 0). A slow previous iteration
+        // that already exceeded the budget also returns 0 — the next iteration
+        // fires immediately instead of waiting on top of the overshoot.
+        long throttleDelay = computeThrottleDelayMs(
+                originalAgent.getMinIterationIntervalMs(),
+                previousIterationStartMs,
+                System.currentTimeMillis());
+        if (throttleDelay > 0) {
+            logger.debug("Throttling agent '{}' for {} ms before iteration {} (minIterationIntervalMs={})",
+                    originalAgent.getId(), throttleDelay, iteration, originalAgent.getMinIterationIntervalMs());
+            try {
+                Thread.sleep(throttleDelay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return CompletableFuture.failedFuture(e);
+            }
+        }
+        long thisIterationStartMs = System.currentTimeMillis();
 
         logger.debug("Autonomous loop iteration {} for agent '{}'", iteration, originalAgent.getId());
 
@@ -382,7 +429,8 @@ public class AutonomousAgentRunner {
                     cumulativeUsage.accumulate(result.getUsage());
                     return handleResponse(
                             result, virtualAgent, originalAgent, convId, userMessage,
-                            toolExecutor, iteration, maxIterations, cumulativeUsage);
+                            toolExecutor, iteration, maxIterations, cumulativeUsage,
+                            thisIterationStartMs);
                 });
     }
 
@@ -394,10 +442,11 @@ public class AutonomousAgentRunner {
                                                           String convId, String userMessage,
                                                           ToolExecutor toolExecutor,
                                                           int iteration, int maxIterations,
-                                                          TokenUsage cumulativeUsage) {
+                                                          TokenUsage cumulativeUsage,
+                                                          long thisIterationStartMs) {
         if (result.hasFunctionCalls()) {
             return handleFunctionCalls(result, virtualAgent, originalAgent, convId, userMessage,
-                    toolExecutor, iteration, maxIterations, cumulativeUsage);
+                    toolExecutor, iteration, maxIterations, cumulativeUsage, thisIterationStartMs);
         }
 
         // No function calls - agent is "thinking aloud" or returned structured output as text
@@ -418,7 +467,7 @@ public class AutonomousAgentRunner {
         // Nudge: requestAgent already stored the assistant message in conversation.
         // We just need to continue the loop - the next iteration will send a continuation message.
         return executeLoop(virtualAgent, originalAgent, convId, userMessage,
-                toolExecutor, iteration + 1, maxIterations, cumulativeUsage);
+                toolExecutor, iteration + 1, maxIterations, cumulativeUsage, thisIterationStartMs);
     }
 
     /**
@@ -429,7 +478,8 @@ public class AutonomousAgentRunner {
                                                                String convId, String userMessage,
                                                                ToolExecutor toolExecutor,
                                                                int iteration, int maxIterations,
-                                                               TokenUsage cumulativeUsage) {
+                                                               TokenUsage cumulativeUsage,
+                                                               long thisIterationStartMs) {
         List<FunctionCall> calls = result.getFunctionCalls();
 
         // requestAgent already stored the assistant message (with tool call summary) in conversation.
@@ -485,7 +535,7 @@ public class AutonomousAgentRunner {
 
         // Continue loop - tool results are in conversation, next requestAgent will pick them up
         return executeLoop(virtualAgent, originalAgent, convId, userMessage,
-                toolExecutor, iteration + 1, maxIterations, cumulativeUsage);
+                toolExecutor, iteration + 1, maxIterations, cumulativeUsage, thisIterationStartMs);
     }
 
     private String trimToolOutput(String output, Integer maxTokens, String toolName) {
