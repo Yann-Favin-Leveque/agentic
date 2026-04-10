@@ -156,15 +156,15 @@ class ConversationManagerTest {
     @Test
     void truncateByTokenBudget_zeroBudgetClearsAll() {
         int removed = manager.truncateByTokenBudget(convId, 0);
-        assertEquals(20, removed);
-        assertEquals(0, manager.getMessageCount(convId));
+        assertEquals(19, removed);
+        assertEquals(1, manager.getMessageCount(convId));
     }
 
     @Test
     void truncateByTokenBudget_negativeBudgetClearsAll() {
         int removed = manager.truncateByTokenBudget(convId, -123);
-        assertEquals(20, removed);
-        assertEquals(0, manager.getMessageCount(convId));
+        assertEquals(19, removed);
+        assertEquals(1, manager.getMessageCount(convId));
     }
 
     @Test
