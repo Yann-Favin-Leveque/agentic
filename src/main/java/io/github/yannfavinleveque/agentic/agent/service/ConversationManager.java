@@ -320,15 +320,20 @@ public class ConversationManager {
         if (history.isEmpty()) return 0;
 
         if (maxTokens <= 0) {
-            int removed = history.size();
+            // Always keep at least the last message to avoid empty conversations
+            if (history.size() <= 1) return 0;
+            int removed = history.size() - 1;
+            Message last = history.get(history.size() - 1);
             history.clear();
-            logger.debug("Truncated conversation {} by token budget: cleared all {} messages (budget <= 0)",
+            history.add(last);
+            logger.debug("Truncated conversation {} by token budget: cleared {} messages, kept last (budget <= 0)",
                     conversationId, removed);
             return removed;
         }
 
         // Walk backwards from the most recent message, accumulating token
         // estimates until adding another message would exceed the budget.
+        // Always keep at least the last message to avoid empty conversations.
         int total = 0;
         int keepFromIndex = history.size();
         for (int i = history.size() - 1; i >= 0; i--) {
@@ -338,6 +343,10 @@ public class ConversationManager {
             }
             total += tokens;
             keepFromIndex = i;
+        }
+        // Guarantee at least the most recent message is retained
+        if (keepFromIndex >= history.size()) {
+            keepFromIndex = history.size() - 1;
         }
 
         if (keepFromIndex == 0) return 0;
