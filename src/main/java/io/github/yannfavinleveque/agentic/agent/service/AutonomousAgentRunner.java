@@ -223,7 +223,21 @@ public class AutonomousAgentRunner {
 
         List<FunctionConfig> functions = new ArrayList<>();
         if (original.getFunctions() != null) {
-            functions.addAll(original.getFunctions());
+            Set<String> enabledGroups = original.getEnabledToolGroups();
+            if (enabledGroups == null) {
+                // Legacy / no group filtering: expose everything.
+                functions.addAll(original.getFunctions());
+            } else {
+                // Group-filtered: expose only functions whose group is null / "default" / enabled.
+                for (FunctionConfig fc : original.getFunctions()) {
+                    String g = fc.getGroup();
+                    if (g == null || g.isBlank() || "default".equals(g) || enabledGroups.contains(g)) {
+                        functions.add(fc);
+                    }
+                }
+                logger.debug("Agent '{}' group-filter: {} / {} functions exposed (enabled groups: {})",
+                        original.getId(), functions.size(), original.getFunctions().size(), enabledGroups);
+            }
         }
 
         // Auto-inject task_over ONLY when:

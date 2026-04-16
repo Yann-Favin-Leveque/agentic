@@ -120,6 +120,22 @@ public class FunctionConfig {
     private Boolean endsTurn = false;
 
     /**
+     * Optional tool-group tag. When an agent has {@code enabledToolGroups} defined, only
+     * functions whose group is {@code null} / empty / {@code "default"} OR in the agent's
+     * enabled set are exposed to the LLM in the function-calling schema. Functions from
+     * non-enabled groups remain registered (the caller can execute them) but are hidden
+     * from the model until the group is enabled.
+     * <p>
+     * Use this to reduce input-token cost on large toolboxes: keep essentials always-on,
+     * gate niche tools behind groups like {@code "shell"}, {@code "web"}, {@code "fs_write"}.
+     * <p>
+     * When {@code enabledToolGroups} is not set on the agent, the group field is ignored
+     * and all functions are exposed (legacy behavior).
+     */
+    @JsonProperty("group")
+    private String group;
+
+    /**
      * Optional: fully qualified class name (or simple name) of a class implementing
      * {@link ToolExecutor}. Used in autonomous agent mode to execute this function
      * without requiring a lambda at the call site.

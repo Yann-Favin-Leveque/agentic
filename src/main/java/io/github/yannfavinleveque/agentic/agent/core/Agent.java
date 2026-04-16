@@ -219,6 +219,20 @@ public class Agent {
     private Boolean endTurnOnPlainReply = false;
 
     /**
+     * Set of tool-group names currently ENABLED for this agent. Functions with {@code group}
+     * set are exposed to the LLM only if their group is in this set (or if the group is
+     * {@code null} / {@code "default"}).
+     * <p>
+     * Use this for large toolboxes where only a subset is needed per task. Set the core tools'
+     * group to {@code null} so they're always visible; tag situational tools (shell, web,
+     * fs_write…) and toggle groups at runtime by rebuilding the agent.
+     * <p>
+     * When this is {@code null} (default), all functions are exposed regardless of group —
+     * that is the legacy behavior, fully backwards-compatible.
+     */
+    private java.util.Set<String> enabledToolGroups;
+
+    /**
      * Maximum token count for tool output in autonomous mode.
      * When set, tool execution results are trimmed to this token limit before being
      * added to the conversation history. Tokens are estimated at ~4 characters per token.
