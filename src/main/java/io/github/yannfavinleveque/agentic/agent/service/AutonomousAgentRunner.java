@@ -17,8 +17,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -216,15 +218,24 @@ public class AutonomousAgentRunner {
      * without spinning up a full AgentService + HTTP stack.
      */
     Agent buildVirtualAgent(Agent original) {
-        boolean disableTaskOver = Boolean.TRUE.equals(original.getDisableTaskOver());
+        boolean infiniteLoop = Boolean.TRUE.equals(original.getInfiniteLoop())
+                || Boolean.TRUE.equals(original.getDisableTaskOver());  // legacy alias
 
         List<FunctionConfig> functions = new ArrayList<>();
         if (original.getFunctions() != null) {
             functions.addAll(original.getFunctions());
         }
 
+        // Auto-inject task_over ONLY when:
+        //   - the agent is NOT in infinite-loop mode, AND
+        //   - no existing function already declares endsTurn=true
+        // This is the backwards-compat fallback: legacy agents get task_over transparently.
+        boolean hasEndsTurnTool = functions.stream()
+                .anyMatch(fc -> Boolean.TRUE.equals(fc.getEndsTurn()));
+        boolean injectTaskOver = !infiniteLoop && !hasEndsTurnTool;
+
         String instructions = original.getInstructions() != null ? original.getInstructions() : "";
-        if (!disableTaskOver) {
+        if (injectTaskOver) {
             functions.add(buildTaskOverFunction(original));
             instructions += "\n\nWhen the task is fully complete, you MUST call the '"
                     + ToolBuilder.TASK_OVER_FUNCTION_NAME
@@ -464,6 +475,14 @@ public class AutonomousAgentRunner {
             return CompletableFuture.completedFuture(parsedResult);
         }
 
+        // Conversational agents: a plain reply IS the end of the turn. Stop the loop
+        // cleanly instead of nudging the model into another iteration.
+        if (Boolean.TRUE.equals(originalAgent.getEndTurnOnPlainReply())) {
+            logger.debug("Agent '{}' ended turn on plain reply at iteration {}",
+                    originalAgent.getId(), iteration);
+            return CompletableFuture.completedFuture(new DefaultResult(textContent));
+        }
+
         // Nudge: requestAgent already stored the assistant message in conversation.
         // We just need to continue the loop - the next iteration will send a continuation message.
         return executeLoop(virtualAgent, originalAgent, convId, userMessage,
@@ -491,46 +510,77 @@ public class AutonomousAgentRunner {
                 Message.assistantWithToolCalls(result.getContent(), calls));
 
         Integer maxTokens = originalAgent.getMaxToolTokenOutput();
-        boolean disableTaskOver = Boolean.TRUE.equals(originalAgent.getDisableTaskOver());
-        AgentResult taskOverResult = null;
+        boolean infiniteLoop = Boolean.TRUE.equals(originalAgent.getInfiniteLoop())
+                || Boolean.TRUE.equals(originalAgent.getDisableTaskOver());  // legacy alias
 
-        for (FunctionCall call : calls) {
-            if (ToolBuilder.TASK_OVER_FUNCTION_NAME.equals(call.getName())) {
-                if (disableTaskOver) {
-                    // Agent was configured with disableTaskOver=true: task_over was not
-                    // advertised as a tool. If the model hallucinates a call to it, we reject
-                    // the call and nudge the model to keep acting instead of completing.
-                    logger.warn("Agent '{}' emitted task_over at iteration {} despite disableTaskOver=true — ignoring and continuing the loop",
-                            originalAgent.getId(), iteration);
-                    conversationManager.addMessage(convId,
-                            Message.toolResult(call.getId(), call.getName(),
-                                    "Error: task_over is not available for this agent. "
-                                            + "Keep acting via the other tools — the loop will only end on external cancellation."));
-                    continue;
+        // Build a quick lookup of endsTurn tool names from the virtual agent's functions.
+        // task_over is always endsTurn=true when present in the virtual agent.
+        Set<String> endsTurnToolNames = new HashSet<>();
+        if (virtualAgent.getFunctions() != null) {
+            for (FunctionConfig fc : virtualAgent.getFunctions()) {
+                if (Boolean.TRUE.equals(fc.getEndsTurn())
+                        || ToolBuilder.TASK_OVER_FUNCTION_NAME.equals(fc.getName())) {
+                    endsTurnToolNames.add(fc.getName());
                 }
-                logger.info("Agent '{}' called task_over at iteration {}",
-                        originalAgent.getId(), iteration);
-                taskOverResult = deserializeTaskOverResult(call, originalAgent);
-                conversationManager.addMessage(convId,
-                        Message.toolResult(call.getId(), call.getName(), "Task completed."));
-            } else {
-                String toolResult;
-                try {
-                    logger.debug("Executing tool '{}' with args: {}", call.getName(), call.getArguments());
-                    toolResult = toolExecutor.execute(call);
-                } catch (Exception e) {
-                    logger.warn("Tool '{}' execution failed: {}", call.getName(), e.getMessage());
-                    toolResult = "Error executing " + call.getName() + ": " + e.getMessage();
-                }
-
-                toolResult = trimToolOutput(toolResult, maxTokens, call.getName());
-                conversationManager.addMessage(convId,
-                        Message.toolResult(call.getId(), call.getName(), toolResult));
             }
         }
 
-        if (taskOverResult != null) {
-            return CompletableFuture.completedFuture(taskOverResult);
+        AgentResult endTurnResult = null;
+
+        for (FunctionCall call : calls) {
+            boolean isTaskOver = ToolBuilder.TASK_OVER_FUNCTION_NAME.equals(call.getName());
+            boolean isEndsTurn = endsTurnToolNames.contains(call.getName());
+
+            if (isTaskOver && infiniteLoop) {
+                // Infinite-loop agent: reject hallucinated task_over calls.
+                logger.warn("Agent '{}' emitted task_over at iteration {} despite infiniteLoop=true — ignoring and continuing the loop",
+                        originalAgent.getId(), iteration);
+                conversationManager.addMessage(convId,
+                        Message.toolResult(call.getId(), call.getName(),
+                                "Error: task_over is not available for this agent. "
+                                        + "Keep acting via the other tools — the loop will only end on external cancellation."));
+                continue;
+            }
+
+            if (isTaskOver) {
+                // Special case: task_over carries a structured result (derived from agent.resultClass).
+                logger.info("Agent '{}' called task_over at iteration {}",
+                        originalAgent.getId(), iteration);
+                endTurnResult = deserializeTaskOverResult(call, originalAgent);
+                conversationManager.addMessage(convId,
+                        Message.toolResult(call.getId(), call.getName(), "Task completed."));
+                continue;
+            }
+
+            // Execute the tool (normal OR endsTurn).
+            String toolResult;
+            try {
+                logger.debug("Executing tool '{}' with args: {}", call.getName(), call.getArguments());
+                toolResult = toolExecutor.execute(call);
+            } catch (Exception e) {
+                logger.warn("Tool '{}' execution failed: {}", call.getName(), e.getMessage());
+                toolResult = "Error executing " + call.getName() + ": " + e.getMessage();
+            }
+            toolResult = trimToolOutput(toolResult, maxTokens, call.getName());
+            conversationManager.addMessage(convId,
+                    Message.toolResult(call.getId(), call.getName(), toolResult));
+
+            if (isEndsTurn) {
+                // Any user-declared endsTurn tool: capture the tool result as the final content
+                // of the turn, and stop the loop after this batch of calls.
+                logger.info("Agent '{}' called endsTurn tool '{}' at iteration {} — ending turn",
+                        originalAgent.getId(), call.getName(), iteration);
+                if (endTurnResult == null) {
+                    String finalContent = result.getContent() != null && !result.getContent().isEmpty()
+                            ? result.getContent() : toolResult;
+                    DefaultResult dr = new DefaultResult(finalContent, calls);
+                    endTurnResult = dr;
+                }
+            }
+        }
+
+        if (endTurnResult != null) {
+            return CompletableFuture.completedFuture(endTurnResult);
         }
 
         // Continue loop - tool results are in conversation, next requestAgent will pick them up

@@ -98,6 +98,28 @@ public class FunctionConfig {
     private java.util.Map<String, Object> parameters;
 
     /**
+     * If {@code true}, calling this tool ENDS the current autonomous turn:
+     * the tool is executed, its result is stored in the conversation, and the
+     * autonomous loop returns immediately (no further LLM iteration).
+     * <p>
+     * Use this for tools that represent a natural end-of-turn:
+     * <ul>
+     *   <li>{@code ask_user} — hand control back to the user for input</li>
+     *   <li>{@code task_complete} — signal a milestone and pause</li>
+     *   <li>Custom "final answer" or "handoff" tools</li>
+     * </ul>
+     * Replaces the legacy hardcoded {@code task_over} mechanism: if NO function has
+     * {@code endsTurn=true} and the agent is autonomous, the library auto-injects a
+     * {@code task_over} function with {@code endsTurn=true} for backwards compatibility.
+     * <p>
+     * Default: {@code false}.
+     */
+    @JsonProperty("endsTurn")
+    @JsonAlias("ends_turn")
+    @lombok.Builder.Default
+    private Boolean endsTurn = false;
+
+    /**
      * Optional: fully qualified class name (or simple name) of a class implementing
      * {@link ToolExecutor}. Used in autonomous agent mode to execute this function
      * without requiring a lambda at the call site.

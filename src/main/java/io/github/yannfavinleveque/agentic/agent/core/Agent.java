@@ -178,23 +178,45 @@ public class Agent {
     private Boolean maxIterationsUnlimited = false;
 
     /**
-     * When {@code true}, the library does NOT inject the {@code task_over}
-     * tool into this autonomous agent, does NOT append the "you must call
-     * task_over when done" instruction, and ignores any {@code task_over}
-     * call the model might still produce. The loop therefore never completes
-     * on its own — it only ends on cancellation, error, or
-     * {@link #maxIterations} (unless {@link #maxIterationsUnlimited} is also
-     * {@code true}).
+     * DEPRECATED — kept for backwards compatibility with agents registered before v1.18.
+     * Equivalent to {@link #infiniteLoop}{@code =true}. When either flag is true, the
+     * library does NOT auto-inject {@code task_over} and the autonomous loop never
+     * completes on its own (ends only on cancel, error, or {@link #maxIterations}).
      * <p>
-     * Combine with {@link #maxIterationsUnlimited}{@code =true} for a truly
-     * immortal agent loop. Typical use: one autonomous agent per long-lived
-     * entity in a simulation, fed by
-     * {@link io.github.yannfavinleveque.agentic.agent.service.AgentService#insertMessage}.
-     * <p>
-     * Default: {@code false} — legacy behaviour (task_over is injected).
+     * Use {@link #infiniteLoop} in new code.
      */
+    @Deprecated
     @Builder.Default
     private Boolean disableTaskOver = false;
+
+    /**
+     * When {@code true}, the library does NOT auto-inject any end-of-turn tool.
+     * The autonomous loop runs indefinitely — it ends only on external cancellation,
+     * error, or when {@link #maxIterations} is reached (unless
+     * {@link #maxIterationsUnlimited} is also {@code true}).
+     * <p>
+     * Use for immortal observer-style agents fed externally via
+     * {@link io.github.yannfavinleveque.agentic.agent.service.AgentService#insertMessage}.
+     * <p>
+     * Default: {@code false}.
+     */
+    @Builder.Default
+    private Boolean infiniteLoop = false;
+
+    /**
+     * When {@code true}, a plain-text LLM response (no function calls, no structured
+     * result parsable) ENDS the autonomous turn instead of being "nudged" into another
+     * iteration. Use for conversational agents where the natural-language reply IS the
+     * end of the turn.
+     * <p>
+     * Combine with {@link FunctionConfig#endsTurn}-flagged tools (like {@code ask_user},
+     * {@code task_complete}) to get a conversational agent that loops over tools but
+     * stops cleanly on a plain reply to the user.
+     * <p>
+     * Default: {@code false} — legacy behaviour (nudge on empty text).
+     */
+    @Builder.Default
+    private Boolean endTurnOnPlainReply = false;
 
     /**
      * Maximum token count for tool output in autonomous mode.
