@@ -1140,6 +1140,23 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Changelog
 
+### v1.20.0
+- **New**: `AgentService.updateAgentFunctions(parentAgentId, newFunctions)` — replaces the function list of a registered agent AND propagates the change (with the same `enabledToolGroups` filter + `task_over` auto-injection) to every active autonomous virtual child. The new list ships to the LLM on the NEXT loop iteration; in-flight HTTP requests are unaffected. Thread-safe (per-`Agent` `synchronized`). Useful for live tool-catalog mutations (pin/unpin, hot-registered adapters) that must surface within the current turn instead of waiting for the next `sendUserMessage`.
+- **New**: `Message.id` — opaque, conversation-local id auto-assigned by `ConversationManager.addMessage` (null for messages built outside a conversation, e.g. stateless requests). Enables dedup/replace patterns (inject a fresh snapshot, remove the stale one) without accumulating input tokens.
+- **New**: `AgentService.removeMessage(conversationId, messageId)` + `ConversationManager.removeMessage(...)` — delete a previously inserted message by id. Pairs with the new `insertMessage` return value.
+- **Changed return type** (source-compatible, **NOT binary-compatible**): `AgentService.insertMessage(convId, role, content)` and `ConversationManager.addMessage(convId, message)` now return the auto-generated `String` message id instead of `void`. Callers ignoring the return value recompile cleanly; anything linked against 1.19.0 bytecode will throw `NoSuchMethodError` at runtime until rebuilt against 1.20.
+- Internal refactor: `AutonomousAgentRunner.buildVirtualAgent` now delegates the group-filter + `task_over` auto-injection logic to two package-private helpers (`applyGroupFilter`, `maybeInjectTaskOver`) so `updateAgentFunctions` can keep virtual children consistent with a fresh rebuild. No behaviour change for existing agents.
+
+#### Migrating from 1.19.0 to 1.20.0
+
+**JSON agent definitions** — no changes required. The new features (`updateAgentFunctions`, `Message.id`, `removeMessage`) are all additive at the JSON level; no new required fields. `Message.id` serializes only when non-null (class already has `@JsonInclude(NON_NULL)`), so messages persisted pre-1.20 round-trip unchanged.
+
+**Source code** — recompile and you're done. All pre-1.20 call sites of `insertMessage` / `addMessage` that ignore the return value still compile identically. If you stored the return explicitly (unlikely — it was `void`), no source change needed either.
+
+**Binary/ABI** — you MUST rebuild any downstream module that calls `AgentService.insertMessage(...)` or `ConversationManager.addMessage(...)`. Their JVM descriptors changed from `...;V` to `...;Ljava/lang/String;`; an old `.class` file linked against 1.19 will hit `NoSuchMethodError` at the first call. A clean `mvn install` on the dependency tree is enough.
+
+**Runtime behaviour** — unchanged for every existing code path. `updateAgentFunctions` is opt-in; nothing calls it by default. Virtual-child rebuilds go through the same `applyGroupFilter` + `maybeInjectTaskOver` logic that `buildVirtualAgent` used before the refactor, so an agent whose tool list never mutates mid-turn sees byte-identical behaviour.
+
 ### v1.19.0
 - **New**: `Agent.minIterationIntervalMs` — throttle the autonomous loop to a minimum start-to-start interval between iterations. Lets long-running/immortal loops cap their LLM rate without holding permits during the wait.
 - **New**: `FunctionConfig.group` + `Agent.enabledToolGroups` — per-agent tool filtering. Tag tools with a group and expose only a subset to the LLM to keep input-token cost low on large toolboxes.
