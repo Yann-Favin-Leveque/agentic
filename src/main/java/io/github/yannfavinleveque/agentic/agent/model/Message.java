@@ -48,6 +48,16 @@ import java.util.List;
 public class Message {
 
     /**
+     * Opaque, conversation-local message id assigned by {@link io.github.yannfavinleveque.agentic.agent.service.ConversationManager}
+     * when the message is inserted. Null for messages built outside a conversation (e.g. stateless
+     * requests). Consumers can use this id to remove a specific message via
+     * {@link io.github.yannfavinleveque.agentic.agent.service.AgentService#removeMessage(String, String)}
+     * — useful for dedup patterns like mid-turn report refresh.
+     */
+    @JsonProperty("id")
+    private String id;
+
+    /**
      * Message role: "user", "assistant", "system", or "tool".
      */
     @JsonProperty("role")

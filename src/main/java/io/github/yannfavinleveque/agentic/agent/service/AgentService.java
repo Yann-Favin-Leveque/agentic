@@ -10,6 +10,7 @@ import io.github.yannfavinleveque.agentic.agent.core.Provider;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
 import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
+import io.github.yannfavinleveque.agentic.agent.model.FunctionConfig;
 import io.github.yannfavinleveque.agentic.agent.model.Message;
 import io.github.yannfavinleveque.agentic.agent.model.ModelRequestOptions;
 import io.github.yannfavinleveque.agentic.agent.model.ToolExecutor;
@@ -186,10 +187,29 @@ public class AgentService {
      * @param conversationId Conversation ID
      * @param role           Message role ("user", "assistant", "system")
      * @param content        Message content
+     * @return the auto-generated message id (opaque, conversation-local), or {@code null} if the
+     *         conversation does not exist. The id can be used with
+     *         {@link #removeMessage(String, String)} for dedup/replace patterns.
      */
-    public void insertMessage(String conversationId, String role, String content) {
-        conversationManager.addMessage(conversationId,
+    public String insertMessage(String conversationId, String role, String content) {
+        return conversationManager.addMessage(conversationId,
                 Message.builder().role(role).content(content).build());
+    }
+
+    /**
+     * Removes a previously inserted message from a conversation by its id. Intended for
+     * dedup/replace patterns (e.g. mid-turn retriever-report refresh) where the caller needs to
+     * drop an earlier snapshot before injecting a newer one so input tokens stay bounded. Safe to
+     * call concurrently with an active autonomous loop.
+     *
+     * @param conversationId Conversation ID
+     * @param messageId      The id returned by {@link #insertMessage(String, String, String)} (or
+     *                       any message that was added via {@link ConversationManager#addMessage})
+     * @return {@code true} if a message was removed; {@code false} if the conversation or id were
+     *         not found
+     */
+    public boolean removeMessage(String conversationId, String messageId) {
+        return conversationManager.removeMessage(conversationId, messageId);
     }
 
     /**
@@ -303,6 +323,56 @@ public class AgentService {
      */
     public CompletableFuture<Void> reloadAgent(String agentId) {
         return agentManager.reloadAgent(agentId);
+    }
+
+    /**
+     * Replaces the function list of a registered agent AND propagates the change (with the same
+     * group filter as {@link AutonomousAgentRunner#buildVirtualAgent(Agent)}) to every active
+     * autonomous virtual child of that parent — i.e. any registered agent whose id starts with
+     * {@code parentAgentId + "-autonomous-"}. The new list takes effect on the NEXT iteration of
+     * any in-flight autonomous loop; already-issued LLM HTTP requests are not affected.
+     * <p>
+     * Thread-safe: mutations are guarded by a per-{@link Agent} {@code synchronized} block so a
+     * concurrent loop reading {@link Agent#getFunctions()} always sees a consistent list. An
+     * iteration that was already in flight may ship the previous list — the iteration AFTER picks
+     * up the change. No retroactive editing of open HTTP streams.
+     *
+     * @param parentAgentId the registered (non-virtual) agent id, e.g. "conscient-mini"
+     * @param newFunctions  the full replacement function list; the per-child filter re-applies
+     *                      {@code enabledToolGroups} from the parent before assignment
+     * @return number of agents updated (parent + children); {@code 0} if the parent is unknown
+     */
+    public int updateAgentFunctions(String parentAgentId, List<FunctionConfig> newFunctions) {
+        Agent parent;
+        try {
+            parent = agentManager.getAgent(parentAgentId);
+        } catch (Exception e) {
+            logger.debug("updateAgentFunctions: unknown parent '{}' — noop", parentAgentId);
+            return 0;
+        }
+        if (parent == null) return 0;
+
+        int updated = 0;
+        synchronized (parent) {
+            parent.setFunctions(newFunctions);
+            updated++;
+        }
+
+        String prefix = parentAgentId + "-autonomous-";
+        for (Map.Entry<String, Agent> e : agentManager.getAllAgents().entrySet()) {
+            if (!e.getKey().startsWith(prefix)) continue;
+            Agent child = e.getValue();
+            List<FunctionConfig> filtered = AutonomousAgentRunner.applyGroupFilter(parent, newFunctions);
+            autonomousRunner.maybeInjectTaskOver(child, parent, filtered);
+            synchronized (child) {
+                child.setFunctions(filtered);
+            }
+            updated++;
+        }
+
+        logger.debug("updateAgentFunctions '{}': updated {} agents ({} children)",
+                parentAgentId, updated, updated - 1);
+        return updated;
     }
 
     // ==================== AGENT REQUESTS ====================

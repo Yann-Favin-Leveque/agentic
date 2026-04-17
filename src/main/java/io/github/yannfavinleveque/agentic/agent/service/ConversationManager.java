@@ -138,18 +138,54 @@ public class ConversationManager {
      * Adds an arbitrary message to the conversation.
      * Used by autonomous mode to add tool results and assistant-with-tool-calls messages.
      *
+     * <p>If the message has no id yet, a fresh random UUID is assigned so that callers can later
+     * remove it via {@link #removeMessage(String, String)}. Returns the assigned (or preserved) id,
+     * or {@code null} if the conversation does not exist.
+     *
      * @param conversationId Conversation ID
      * @param message        Message to add
+     * @return the message id (auto-generated if the message had none), or {@code null} if the
+     *         conversation is unknown
      */
-    public void addMessage(String conversationId, Message message) {
-        if (conversationId == null) return;
+    public String addMessage(String conversationId, Message message) {
+        if (conversationId == null || message == null) return null;
 
         List<Message> history = conversations.get(conversationId);
-        if (history != null) {
-            history.add(message);
-            logger.debug("Added {} message to conversation {} (now {} messages)",
-                    message.getRole(), conversationId, history.size());
+        if (history == null) return null;
+        if (message.getId() == null) {
+            message.setId(UUID.randomUUID().toString());
         }
+        history.add(message);
+        logger.debug("Added {} message to conversation {} (now {} messages)",
+                message.getRole(), conversationId, history.size());
+        return message.getId();
+    }
+
+    /**
+     * Removes the first message with the given id from a conversation. Used for mid-turn
+     * dedup/replace patterns (e.g. the Conscient retriever-report refresh) that need to drop a
+     * previously injected message before re-inserting the new version, so input tokens stay
+     * bounded. Safe to call concurrently with an active autonomous loop — the runner re-reads
+     * history between iterations.
+     *
+     * @param conversationId Conversation ID
+     * @param messageId      Message id to remove
+     * @return {@code true} if a message was removed, {@code false} otherwise
+     */
+    public boolean removeMessage(String conversationId, String messageId) {
+        if (conversationId == null || messageId == null) return false;
+        List<Message> history = conversations.get(conversationId);
+        if (history == null) return false;
+        for (int i = 0; i < history.size(); i++) {
+            Message m = history.get(i);
+            if (m != null && messageId.equals(m.getId())) {
+                history.remove(i);
+                logger.debug("Removed message {} from conversation {} (now {} messages)",
+                        messageId, conversationId, history.size());
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

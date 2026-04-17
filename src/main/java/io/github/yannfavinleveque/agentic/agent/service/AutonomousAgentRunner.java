@@ -218,27 +218,11 @@ public class AutonomousAgentRunner {
      * without spinning up a full AgentService + HTTP stack.
      */
     Agent buildVirtualAgent(Agent original) {
+        List<FunctionConfig> functions = applyGroupFilter(original,
+                original.getFunctions() != null ? original.getFunctions() : new ArrayList<>());
+
         boolean infiniteLoop = Boolean.TRUE.equals(original.getInfiniteLoop())
                 || Boolean.TRUE.equals(original.getDisableTaskOver());  // legacy alias
-
-        List<FunctionConfig> functions = new ArrayList<>();
-        if (original.getFunctions() != null) {
-            Set<String> enabledGroups = original.getEnabledToolGroups();
-            if (enabledGroups == null) {
-                // Legacy / no group filtering: expose everything.
-                functions.addAll(original.getFunctions());
-            } else {
-                // Group-filtered: expose only functions whose group is null / "default" / enabled.
-                for (FunctionConfig fc : original.getFunctions()) {
-                    String g = fc.getGroup();
-                    if (g == null || g.isBlank() || "default".equals(g) || enabledGroups.contains(g)) {
-                        functions.add(fc);
-                    }
-                }
-                logger.debug("Agent '{}' group-filter: {} / {} functions exposed (enabled groups: {})",
-                        original.getId(), functions.size(), original.getFunctions().size(), enabledGroups);
-            }
-        }
 
         // Auto-inject task_over ONLY when:
         //   - the agent is NOT in infinite-loop mode, AND
@@ -273,6 +257,51 @@ public class AutonomousAgentRunner {
                 .maxIterations(original.getMaxIterations())
                 .maxToolTokenOutput(original.getMaxToolTokenOutput())
                 .build();
+    }
+
+    /**
+     * Extracts the group-filter logic used by {@link #buildVirtualAgent(Agent)}. Given the original
+     * agent and a source list of functions, returns a new mutable list containing only the functions
+     * whose group is null / blank / "default" / present in the original's {@code enabledToolGroups}.
+     * If {@code enabledToolGroups} is null the full source list is returned unchanged (legacy mode).
+     * <p>
+     * Package-private so {@link AgentService#updateAgentFunctions(String, List)} can re-apply the
+     * same filter when propagating a new function list to virtual children.
+     */
+    static List<FunctionConfig> applyGroupFilter(Agent original, List<FunctionConfig> source) {
+        List<FunctionConfig> out = new ArrayList<>();
+        if (source == null || source.isEmpty()) return out;
+        Set<String> enabledGroups = original.getEnabledToolGroups();
+        if (enabledGroups == null) {
+            out.addAll(source);
+            return out;
+        }
+        for (FunctionConfig fc : source) {
+            String g = fc.getGroup();
+            if (g == null || g.isBlank() || "default".equals(g) || enabledGroups.contains(g)) {
+                out.add(fc);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Mutates {@code filtered} in-place, appending an auto {@code task_over} function if and only if
+     * the equivalent of {@link #buildVirtualAgent(Agent)} would have. Used by
+     * {@link AgentService#updateAgentFunctions(String, List)} to keep virtual children consistent
+     * with what they'd look like if freshly rebuilt.
+     * <p>
+     * Package-private. {@code virtualChild} is unused for now but exposed in case a future
+     * refinement needs per-child context (e.g. a different resultClass).
+     */
+    void maybeInjectTaskOver(Agent virtualChild, Agent parent, List<FunctionConfig> filtered) {
+        boolean infiniteLoop = Boolean.TRUE.equals(parent.getInfiniteLoop())
+                || Boolean.TRUE.equals(parent.getDisableTaskOver());
+        if (infiniteLoop) return;
+        boolean hasEndsTurnTool = filtered.stream()
+                .anyMatch(fc -> Boolean.TRUE.equals(fc.getEndsTurn()));
+        if (hasEndsTurnTool) return;
+        filtered.add(buildTaskOverFunction(parent));
     }
 
     private FunctionConfig buildTaskOverFunction(Agent agent) {
