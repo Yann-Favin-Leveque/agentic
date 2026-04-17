@@ -42,6 +42,10 @@ This project was originally forked from [simple-openai](https://github.com/sashi
   - [Conversation Management](#conversation-management)
   - [Tool Output Trimming](#tool-output-trimming)
   - [Agent Reflection (Thinking Aloud)](#agent-reflection-thinking-aloud)
+  - [Ending the Turn: `endsTurn` and `endTurnOnPlainReply`](#ending-the-turn-endsturn-and-endturnonplainreply)
+  - [Tool Groups](#tool-groups)
+  - [Context Compaction](#context-compaction)
+  - [Infinite / Observer Loops](#infinite--observer-loops)
   - [JSON Configuration](#json-configuration)
   - [Full Example](#full-example)
 - [Embeddings](#embeddings)
@@ -67,7 +71,7 @@ Then add to your project's `pom.xml`:
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.8</version>
+    <version>1.19.0</version>
 </dependency>
 ```
 
@@ -79,7 +83,7 @@ The library is published on Maven Central. No extra repository configuration nee
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.8</version>
+    <version>1.19.0</version>
 </dependency>
 ```
 
@@ -98,7 +102,7 @@ Add the repository to your `pom.xml`:
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.6.8</version>
+    <version>1.19.0</version>
 </dependency>
 ```
 
@@ -433,6 +437,31 @@ if (result.getContent().contains("Function call:")) {
 }
 ```
 
+**`FunctionConfig` advanced fields** (used by autonomous agents — see
+[Ending the Turn](#ending-the-turn-endsturn-and-endturnonplainreply) and
+[Tool Groups](#tool-groups)):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `endsTurn` | boolean | `false` | When `true`, calling this tool ends the autonomous turn after the tool result is stored. Replaces the legacy hardcoded `task_over` with any custom end-of-turn tool (e.g. `ask_user`, `task_complete`). |
+| `group` | string | `null` | Tool-group tag. When the agent defines `enabledToolGroups`, only functions whose `group` is `null` / `"default"` / in the enabled set are exposed to the LLM. Hidden functions stay registered so the caller can still execute them. |
+| `executorClass` | string | `null` | Fully qualified (or simple) class name implementing `ToolExecutor`, used as a fallback executor when no lambda executor is supplied at call time. Lambda takes priority. |
+
+```java
+FunctionConfig askUser = FunctionConfig.builder()
+    .name("ask_user")
+    .description("Ask the user a clarifying question")
+    .parameters(Map.of(
+        "type", "object",
+        "properties", Map.of(
+            "question", Map.of("type", "string", "description", "The question to ask")),
+        "required", List.of("question"),
+        "additionalProperties", false))
+    .endsTurn(true)   // calling this ends the autonomous loop
+    .group("chat")    // only exposed when "chat" is in enabledToolGroups (or when group filtering is disabled)
+    .build();
+```
+
 ### Code Interpreter
 
 Enable code execution for complex calculations:
@@ -457,25 +486,31 @@ System.out.println(result.getContent());
 
 ### Overview
 
-Autonomous mode enables agents to independently execute multi-step tasks using tools, without the caller manually managing the tool-calling loop. The agent decides which tools to call, processes results, and repeats until the task is complete. Termination happens when the agent calls an auto-injected `task_over` function.
+Autonomous mode enables agents to independently execute multi-step tasks using tools, without the caller manually managing the tool-calling loop. The agent decides which tools to call, processes results, and repeats until the turn ends.
 
 This is ideal for complex workflows where the agent needs to:
 - Search for data, analyze it, and produce a summary
 - Make multiple API calls in sequence with decision-making between them
 - Execute a plan with conditional branching based on tool results
+- Run as a long-lived conversational or observer agent (see [Infinite / Observer Loops](#infinite--observer-loops))
 
 ### How It Works
 
 1. **You register an agent** with `autonomous(true)` and define its tools via `functions()`
 2. **You call `requestAgent()`** with a `ToolExecutor` that knows how to execute each tool
 3. **The library manages the loop internally:**
+   - Filters the tool list by `enabledToolGroups` (see [Tool Groups](#tool-groups)) before sending it to the LLM
    - Sends the user message to the LLM
    - If the LLM calls tools → executes them via your `ToolExecutor`, sends results back
-   - If the LLM responds with text only (thinking aloud) → sends a nudge to continue
-   - If the LLM calls `task_over` → deserializes the result and returns it
-4. **The loop terminates** when `task_over` is called or `maxIterations` is reached
+   - If a called tool has `endsTurn=true` (or is the auto-injected `task_over`) → the loop ends after the tool result is stored
+   - If the LLM responds with text only:
+     - by default (`endTurnOnPlainReply=false`) → nudge and continue the loop
+     - if `endTurnOnPlainReply=true` → return the text to the caller and stop (use for conversational agents)
+4. **The loop terminates** when an `endsTurn` tool is called, when the agent returns plain text with `endTurnOnPlainReply=true`, or when `maxIterations` is reached
 
-The `task_over` function is auto-injected by the library. Its parameter schema is automatically generated from the agent's `resultClass`, so the LLM returns structured data that maps directly to your Java class.
+**`task_over` auto-injection.** If no function declares `endsTurn=true` AND `infiniteLoop` / `disableTaskOver` are both `false`, the library auto-injects a `task_over` function as a backwards-compatible end-of-turn mechanism. Its parameter schema is generated from `resultClass`, so the LLM returns structured data that maps directly to your Java class. If you declare your own `endsTurn=true` tool, `task_over` is NOT injected — you own termination.
+
+**Context management.** Long autonomous loops can be kept under control with [Tool Output Trimming](#tool-output-trimming) (per-result cap) and [Context Compaction](#context-compaction) (strip old tool-result bodies and/or enforce a total token budget).
 
 ### Basic Usage
 
@@ -674,6 +709,129 @@ You can encourage this behavior in your instructions:
 
 Claude models tend to think aloud naturally. GPT models are more direct by default but will reflect if instructed to.
 
+### Ending the Turn: `endsTurn` and `endTurnOnPlainReply`
+
+In v1.18+, you have two complementary knobs for deciding when an autonomous turn ends.
+
+**`FunctionConfig.endsTurn`** (boolean, default `false`) — when `true`, calling this tool ends the autonomous loop once the tool result is stored in the conversation. This replaces the legacy hardcoded `task_over` with any custom end-of-turn tool.
+
+```java
+FunctionConfig askUser = FunctionConfig.builder()
+    .name("ask_user")
+    .description("Ask the user a clarifying question and pause")
+    .parameters(Map.of(
+        "type", "object",
+        "properties", Map.of(
+            "question", Map.of("type", "string", "description", "The question")),
+        "required", List.of("question"),
+        "additionalProperties", false))
+    .endsTurn(true)
+    .build();
+```
+
+If NO function on the agent declares `endsTurn=true` (and `infiniteLoop` is off), the library auto-injects `task_over` so pre-v1.18 agents keep working unchanged.
+
+**`Agent.endTurnOnPlainReply`** (boolean, default `false`) — controls what happens when the LLM returns text without any tool calls.
+
+- `false` (default, legacy): nudge the agent (*"Continue with the task. When done, call `task_over`…"*) and run another iteration.
+- `true`: stop the loop and return the plain-text reply to the caller. The natural-language reply IS the end of the turn.
+
+Use `endTurnOnPlainReply=true` for **conversational agents** — the agent loops over its tools and then stops cleanly when it is ready to speak to the user.
+
+```java
+service.registerAgent(Agent.builder()
+    .id("chat-agent")
+    .model("claude-sonnet-4-5")
+    .instructions("You are a helpful assistant. Use tools to look things up, "
+        + "then answer the user in natural language.")
+    .autonomous(true)
+    .endTurnOnPlainReply(true)   // plain text → end turn
+    .maxIterations(60)
+    .functions(List.of(searchFunc, askUser))   // askUser has endsTurn=true
+    .build());
+```
+
+Combine both:
+- `endsTurn` tools handle explicit end-of-turn actions (ask_user, handoff, task_complete)
+- `endTurnOnPlainReply=true` handles the "I'm done reasoning, here is my reply" case
+
+### Tool Groups
+
+Tool groups enable dynamic toolbox management. Instead of exposing every tool to the LLM at every turn (wasting tokens), you can tag tools with groups and selectively enable subsets.
+
+**How it works:**
+1. Tag `FunctionConfig`s with `.group("group_name")`. Functions with `group=null`, empty, or `"default"` are always-on.
+2. Set `Agent.builder().enabledToolGroups(Set.of("group1", "group2"))` to gate the rest.
+3. Before each LLM call, the runner filters the function list: only always-on tools and tools whose group is in `enabledToolGroups` are sent to the LLM. Hidden tools stay registered — your `ToolExecutor` can still execute them if the LLM somehow calls them via another path.
+4. When `enabledToolGroups` is `null` (default), the group field is ignored and all functions are exposed (legacy behavior).
+
+```java
+FunctionConfig think = FunctionConfig.builder().name("think").description("…")
+    .parameters(thinkSchema).build();                          // always-on (group=null)
+
+FunctionConfig writeFile = FunctionConfig.builder().name("write_file").description("…")
+    .parameters(writeSchema).group("fs_write").build();         // gated
+
+FunctionConfig runShell = FunctionConfig.builder().name("run_shell").description("…")
+    .parameters(shellSchema).group("shell").build();            // gated
+
+Agent.builder()
+    .id("coder")
+    .autonomous(true)
+    .functions(List.of(think, writeFile, runShell))
+    .enabledToolGroups(Set.of("fs_write"))   // only "think" and "write_file" are exposed this turn
+    // ...
+    .build();
+```
+
+**Common pattern:** start with a minimal set of groups, and expose a meta-tool like `enable_tool_group` so the agent itself can request more capabilities as the task progresses. Rebuild / re-register the agent with an updated `enabledToolGroups` between turns.
+
+### Context Compaction
+
+Long autonomous loops accumulate bulky tool results. Two complementary controls keep the conversation lean:
+
+**`compactToolResultsAfterIteration`** (Integer, default `null` = disabled) — starting at this iteration number, the library strips the content of old tool-result messages from the conversation (keeping the `[Tool call: name(args)]` summary so the agent still sees what it already did). Bulky response bodies go away.
+
+**`compactKeepLastNIterations`** (Integer, default `1`) — how many most recent iterations are left untouched by compaction. All tool results from those iterations — including parallel tool calls — are preserved.
+
+**`maxConversationTokens`** (Integer, default `null` = disabled) — before each iteration, if the estimated conversation size is over this token budget, the library drops the oldest whole messages until it fits. Runs AFTER compaction so the cheap compaction step gets first shot.
+
+```java
+Agent.builder()
+    .id("long-running-agent")
+    .autonomous(true)
+    .maxIterations(60)
+    .compactToolResultsAfterIteration(30)   // start compacting at iteration 30
+    .compactKeepLastNIterations(5)          // always keep the last 5 iterations intact
+    .maxConversationTokens(40_000)          // hard ceiling on total context
+    // ...
+    .build();
+```
+
+For immortal / observer agents whose rate must be bounded, see also `minIterationIntervalMs` (enforces a minimum start-to-start interval between iterations — the loop sleeps on its own worker thread without holding permits).
+
+### Infinite / Observer Loops
+
+Some agents — e.g. NPCs in a simulation, observer agents fed by `AgentService.insertMessage`, background monitors — should never end on their own. Two fields enable this:
+
+**`infiniteLoop`** (boolean, default `false`) — when `true`, the library does NOT auto-inject `task_over`, and any hallucinated `task_over` call from the LLM is rejected with an error tool result. The loop ends only on external cancellation, error, or when `maxIterations` is reached.
+
+**`maxIterationsUnlimited`** (boolean, default `false`) — when `true`, the `maxIterations` safety check is skipped. Combine with `infiniteLoop=true` for a truly immortal loop.
+
+The older `disableTaskOver` field is a deprecated alias for `infiniteLoop`; both are honored for backwards compatibility.
+
+```java
+Agent.builder()
+    .id("observer-agent")
+    .autonomous(true)
+    .infiniteLoop(true)                 // no task_over injection, no self-termination
+    .maxIterationsUnlimited(true)       // no iteration ceiling either
+    .minIterationIntervalMs(2_000)      // but throttle to ≤ 1 iteration / 2s
+    .maxConversationTokens(40_000)      // and keep context bounded
+    // ...
+    .build();
+```
+
 ### JSON Configuration
 
 Autonomous agents can also be defined in JSON files:
@@ -854,7 +1012,17 @@ Agents can be defined in JSON files or registered programmatically.
 | `resultClass` | string | No | Class name for structured outputs |
 | `autonomous` | boolean | No | Enable autonomous tool loop mode (default: `false`) |
 | `maxIterations` | number | No | Max loop iterations for autonomous mode (default: `25`) |
+| `maxIterationsUnlimited` | boolean | No | Skip the `maxIterations` ceiling (default: `false`). Pairs with `infiniteLoop=true` for immortal loops. |
 | `maxToolTokenOutput` | number | No | Max tokens per tool output in autonomous mode (null = no limit) |
+| `endTurnOnPlainReply` | boolean | No | If `true`, a plain-text reply (no tool calls) ends the turn. Use for conversational agents (default: `false`). |
+| `enabledToolGroups` | array | No | Set of tool-group names currently enabled. Null = all functions exposed (legacy). See [Tool Groups](#tool-groups). |
+| `compactToolResultsAfterIteration` | number | No | Strip old tool-result bodies starting at this iteration (default: `null` = disabled). |
+| `compactKeepLastNIterations` | number | No | How many recent iterations are never compacted (default: `1`). |
+| `maxConversationTokens` | number | No | Hard ceiling on total estimated conversation tokens before each iteration (default: `null` = disabled). |
+| `minIterationIntervalMs` | number | No | Minimum start-to-start interval between iterations, in ms. For rate-bounded immortal loops (default: `null` = disabled). |
+| `infiniteLoop` | boolean | No | No `task_over` auto-injection; loop ends only on cancel/error/`maxIterations` (default: `false`). |
+| `disableTaskOver` | boolean | No | Deprecated alias for `infiniteLoop`. |
+| `reasoningEffort` | string | No | Reasoning effort: `low` / `medium` / `high` / `enabled` / `none`. |
 
 **Function definition:**
 
@@ -873,11 +1041,28 @@ Agents can be defined in JSON files or registered programmatically.
           }
         },
         "required": ["location"]
-      }
+      },
+      "endsTurn": false,
+      "group": "weather",
+      "executorClass": "com.example.tools.WeatherExecutor"
     }
   ]
 }
 ```
+
+**Function fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique function name within the agent |
+| `description` | string | Yes | Sent to the LLM to help it decide when to call the tool |
+| `parameters` | object | No | Inline JSON schema for arguments |
+| `parameterClass` | string | No | Fully qualified (or simple) class name used to generate the parameter schema |
+| `endsTurn` | boolean | No | If `true`, calling this tool ends the autonomous turn (default: `false`). See [Ending the Turn](#ending-the-turn-endsturn-and-endturnonplainreply). |
+| `group` | string | No | Tool-group tag; filtered by `Agent.enabledToolGroups`. See [Tool Groups](#tool-groups). |
+| `executorClass` | string | No | FQCN (or simple name) of a `ToolExecutor` implementation used when no lambda executor is provided. |
+| `methodClass` | string | No | Legacy: FQCN of a Java class implementing the function |
+| `methodName` | string | No | Legacy: method to invoke on `methodClass` |
 
 ## Environment Variables
 
@@ -954,6 +1139,15 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 
 ## Changelog
+
+### v1.19.0
+- **New**: `Agent.minIterationIntervalMs` — throttle the autonomous loop to a minimum start-to-start interval between iterations. Lets long-running/immortal loops cap their LLM rate without holding permits during the wait.
+- **New**: `FunctionConfig.group` + `Agent.enabledToolGroups` — per-agent tool filtering. Tag tools with a group and expose only a subset to the LLM to keep input-token cost low on large toolboxes.
+- **New**: Generic `endsTurn` flag on `FunctionConfig` + `Agent.endTurnOnPlainReply` — build conversational / end-of-turn tools (`ask_user`, `task_complete`) without relying on the hardcoded `task_over`. `endTurnOnPlainReply=true` lets a plain-text reply end the turn cleanly.
+- **New**: `Agent.maxConversationTokens` — per-iteration truncation by estimated token budget; drops the oldest whole messages when over budget (runs after compaction).
+- **New**: `Agent.compactToolResultsAfterIteration` + `compactKeepLastNIterations` — strip bulky tool-result bodies from earlier iterations while keeping tool-call summaries, preventing quadratic context growth.
+- **New**: `Agent.infiniteLoop` + `maxIterationsUnlimited` — immortal observer-style agents that never self-terminate. `disableTaskOver` retained as deprecated alias for `infiniteLoop`.
+- Legacy agents unaffected: when `enabledToolGroups` is `null` all tools are exposed; when no tool declares `endsTurn=true` and `infiniteLoop` is `false`, `task_over` is auto-injected exactly as before.
 
 ### v1.6.0 (2026-02-06)
 - **New**: Direct Anthropic API support (`provider: "anthropic"`) - use Claude models via api.anthropic.com without Azure
