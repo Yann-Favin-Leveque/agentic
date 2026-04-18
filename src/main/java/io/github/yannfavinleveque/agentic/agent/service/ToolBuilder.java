@@ -68,6 +68,11 @@ public class ToolBuilder {
         // Custom functions
         if (agent.getFunctions() != null && !agent.getFunctions().isEmpty()) {
             for (FunctionConfig func : agent.getFunctions()) {
+                if (!isFunctionEnabledForAgent(func, agent)) {
+                    logger.debug("Filtered out function '{}' (group={}) — not in enabledToolGroups {}",
+                            func.getName(), func.getGroup(), agent.getEnabledToolGroups());
+                    continue;
+                }
                 try {
                     Map<String, Object> schema = buildFunctionSchema(func);
                     tools.add(ResponsesRequest.Tool.function(
@@ -82,6 +87,21 @@ public class ToolBuilder {
         }
 
         return tools.isEmpty() ? null : tools;
+    }
+
+    /**
+     * Shared enabledToolGroups filter. A function is enabled when its group is null / blank /
+     * "default", OR the agent's enabledToolGroups set is null (legacy / unset), OR the group
+     * is explicitly present in enabledToolGroups. Used by both the OpenAI Responses and Claude
+     * Messages tool-array builders so single-shot (non-autonomous) callers get the same gating
+     * as the autonomous-loop path in {@code AutonomousAgentRunner.applyGroupFilter}.
+     */
+    public static boolean isFunctionEnabledForAgent(FunctionConfig func, Agent agent) {
+        String g = func.getGroup();
+        if (g == null || g.isBlank() || "default".equals(g)) return true;
+        java.util.Set<String> enabledGroups = agent.getEnabledToolGroups();
+        if (enabledGroups == null) return true; // no filter configured
+        return enabledGroups.contains(g);
     }
 
     /**
@@ -107,6 +127,11 @@ public class ToolBuilder {
         // Custom functions
         if (agent.getFunctions() != null && !agent.getFunctions().isEmpty()) {
             for (FunctionConfig func : agent.getFunctions()) {
+                if (!isFunctionEnabledForAgent(func, agent)) {
+                    logger.debug("Filtered out function '{}' (group={}) — not in enabledToolGroups {}",
+                            func.getName(), func.getGroup(), agent.getEnabledToolGroups());
+                    continue;
+                }
                 try {
                     Map<String, Object> schema = buildFunctionSchema(func);
                     tools.add(ClaudeRequest.ClaudeTool.function(

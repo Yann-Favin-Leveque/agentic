@@ -1701,6 +1701,11 @@ public class UnifiedRequestService {
         if (agent.getFunctions() != null && !agent.getFunctions().isEmpty()) {
             String parameterClassPackage = config.getFunctionParameterClassPackage();
             for (var func : agent.getFunctions()) {
+                if (!ToolBuilder.isFunctionEnabledForAgent(func, agent)) {
+                    logger.debug("Filtered out function '{}' (group={}) — not in enabledToolGroups {}",
+                            func.getName(), func.getGroup(), agent.getEnabledToolGroups());
+                    continue;
+                }
                 Map<String, Object> functionTool = new HashMap<>();
                 functionTool.put("type", "function");
                 functionTool.put("name", func.getName());
