@@ -44,6 +44,7 @@ public class AutonomousAgentRunner {
     private final AgentManager agentManager;
     private final ConversationManager conversationManager;
     private AgentService agentService;
+    private volatile AutonomousIterationListener iterationListener;
 
     public AutonomousAgentRunner(AgentServiceConfig config,
                                  AgentManager agentManager,
@@ -58,6 +59,25 @@ public class AutonomousAgentRunner {
      */
     void setAgentService(AgentService agentService) {
         this.agentService = agentService;
+    }
+
+    /** Set (or clear with null) a listener invoked after each LLM call inside the autonomous loop. */
+    public void setIterationListener(AutonomousIterationListener listener) {
+        this.iterationListener = listener;
+    }
+
+    private void fireIterationListener(Agent originalAgent, String virtualAgentId, String convId,
+                                       int iteration, long durationMs,
+                                       io.github.yannfavinleveque.agentic.agent.model.AgentResult result) {
+        AutonomousIterationListener l = this.iterationListener;
+        if (l == null) return;
+        try {
+            l.onIteration(new AutonomousIterationListener.IterationEvent(
+                    originalAgent, virtualAgentId, convId, iteration, durationMs, result));
+        } catch (Exception e) {
+            logger.warn("Iteration listener threw for agent '{}' iteration {}: {}",
+                    originalAgent.getId(), iteration, e.toString());
+        }
     }
 
     /**
@@ -481,6 +501,8 @@ public class AutonomousAgentRunner {
                 .thenCompose(result -> {
                     // Accumulate token usage from this iteration
                     cumulativeUsage.accumulate(result.getUsage());
+                    fireIterationListener(originalAgent, virtualAgent.getId(), convId, iteration,
+                            System.currentTimeMillis() - thisIterationStartMs, result);
                     return handleResponse(
                             result, virtualAgent, originalAgent, convId, userMessage,
                             toolExecutor, iteration, maxIterations, cumulativeUsage,

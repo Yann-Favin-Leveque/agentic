@@ -291,6 +291,15 @@ public class AgentService {
     }
 
     /**
+     * Registers (or clears with null) a listener invoked once per iteration of the autonomous
+     * agent loop, immediately after each LLM call returns. Useful for per-iteration observability
+     * (token counts, durations, function-call previews).
+     */
+    public void setAutonomousIterationListener(AutonomousIterationListener listener) {
+        autonomousRunner.setIterationListener(listener);
+    }
+
+    /**
      * Lists all registered agents.
      */
     public List<Agent> listAgents() {
