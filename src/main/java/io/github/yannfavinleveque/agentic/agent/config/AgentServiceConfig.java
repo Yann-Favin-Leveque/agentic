@@ -311,28 +311,75 @@ public class AgentServiceConfig {
      * resources from JAR if needed. This method is called internally before
      * AgentService initialization.
      *
+     * <p>Supported forms for {@code agentJsonFolderPath}:</p>
+     * <ul>
+     *   <li>{@code null} — defaults to classpath sub-path {@code "agents"} (legacy).</li>
+     *   <li>{@code "src/main/resources/<sub>"} — strips the prefix; classpath sub-path is {@code <sub>}.</li>
+     *   <li>{@code "classpath:<sub>"} — strips the prefix; classpath sub-path is {@code <sub>}.</li>
+     *   <li>Any other value — treated as a filesystem path and returned as-is (no extraction).</li>
+     * </ul>
+     *
      * @return Normalized agent folder path (extracted to temp directory if from JAR)
      */
     public String resolveAgentJsonFolderPath() {
-        // If path is not set or points to classpath/resources, extract from JAR
-        if (agentJsonFolderPath == null ||
-            agentJsonFolderPath.startsWith("classpath:") ||
-            agentJsonFolderPath.startsWith("src/main/resources/")) {
+        String classpathSubPath = computeClasspathSubPath(agentJsonFolderPath);
 
+        if (classpathSubPath != null) {
             try {
-                Path extractedPath = AgentResourceExtractor.extractAgentsFromClasspath();
+                Path extractedPath = AgentResourceExtractor.extractAgentsFromClasspath(classpathSubPath);
                 String resolvedPath = extractedPath.toString();
-                logger.info("📂 Agent JSON folder automatically resolved to: {}", resolvedPath);
+                logger.info("📂 Agent JSON folder automatically resolved to: {} (classpath sub-path: '{}')",
+                        resolvedPath, classpathSubPath);
                 return resolvedPath;
             } catch (IOException e) {
-                logger.error("❌ Failed to extract agent resources from classpath: {}", e.getMessage());
+                logger.error("❌ Failed to extract agent resources from classpath '{}': {}",
+                        classpathSubPath, e.getMessage());
                 logger.warn("⚠️  Falling back to original path: {}", agentJsonFolderPath);
                 return agentJsonFolderPath;
             }
         }
 
-        // Path is already a file system path, use as-is
+        // Path is already a filesystem path, use as-is
         return agentJsonFolderPath;
+    }
+
+    /**
+     * Derive the classpath sub-path that should be looked up by {@link AgentResourceExtractor}.
+     *
+     * @param configuredPath value provided to {@code agentJsonFolderPath} (may be null)
+     * @return classpath sub-path (e.g. {@code "agents"}, {@code "prompts/agents"}) or {@code null}
+     *         if the configured path should be treated as a plain filesystem path.
+     */
+    static String computeClasspathSubPath(String configuredPath) {
+        if (configuredPath == null) {
+            // Backward compat: when nothing is configured, default to "agents" classpath sub-path.
+            return "agents";
+        }
+        String trimmed = configuredPath.trim();
+        if (trimmed.isEmpty()) {
+            return "agents";
+        }
+        if (trimmed.startsWith("classpath:")) {
+            String sub = trimmed.substring("classpath:".length());
+            return stripSlashes(sub);
+        }
+        if (trimmed.startsWith("src/main/resources/")) {
+            String sub = trimmed.substring("src/main/resources/".length());
+            return stripSlashes(sub);
+        }
+        // Filesystem path — don't try to extract from classpath.
+        return null;
+    }
+
+    private static String stripSlashes(String s) {
+        String result = s;
+        while (result.startsWith("/")) {
+            result = result.substring(1);
+        }
+        while (result.endsWith("/")) {
+            result = result.substring(0, result.length() - 1);
+        }
+        return result.isEmpty() ? "agents" : result;
     }
 
 }

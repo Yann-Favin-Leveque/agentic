@@ -1140,6 +1140,10 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Changelog
 
+### v1.20.1
+- **Fix**: `AgentResourceExtractor` now honors the configured `agentJsonFolderPath` sub-path instead of always looking up `agents/` on the classpath. Configuring `agentJsonFolderPath("src/main/resources/prompts/agents")` (or `classpath:prompts/agents`) now correctly extracts JSON files from the matching classpath sub-directory. Backward compatible: `null`, empty, `"src/main/resources/agents"`, and `"classpath:agents"` all resolve to the previous `agents` sub-path. Filesystem paths are still returned as-is. Per-sub-path temp directories (`agentic-helper-<sub-path>`) avoid collisions between coexisting apps.
+- **API change** (internal): `AgentResourceExtractor.extractAgentsFromClasspath()` is now `extractAgentsFromClasspath(String classpathSubPath)`. End users should not be impacted — the method is invoked only by `AgentServiceConfig.resolveAgentJsonFolderPath()`, which derives the sub-path automatically from `agentJsonFolderPath`.
+
 ### v1.20.0
 - **New**: `AgentService.updateAgentFunctions(parentAgentId, newFunctions)` — replaces the function list of a registered agent AND propagates the change (with the same `enabledToolGroups` filter + `task_over` auto-injection) to every active autonomous virtual child. The new list ships to the LLM on the NEXT loop iteration; in-flight HTTP requests are unaffected. Thread-safe (per-`Agent` `synchronized`). Useful for live tool-catalog mutations (pin/unpin, hot-registered adapters) that must surface within the current turn instead of waiting for the next `sendUserMessage`.
 - **New**: `Message.id` — opaque, conversation-local id auto-assigned by `ConversationManager.addMessage` (null for messages built outside a conversation, e.g. stateless requests). Enables dedup/replace patterns (inject a fresh snapshot, remove the stale one) without accumulating input tokens.

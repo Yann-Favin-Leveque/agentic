@@ -10,6 +10,8 @@ import java.net.URI;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -19,26 +21,52 @@ import java.util.stream.Stream;
 public class AgentResourceExtractor {
 
     private static final Logger logger = LoggerFactory.getLogger(AgentResourceExtractor.class);
-    private static final String AGENTS_CLASSPATH_PATTERN = "classpath:agents/*.json";
-    private static final String TEMP_AGENTS_FOLDER = "agentic-helper-agents";
-
-    private static Path extractedAgentDirectory = null;
+    private static final String TEMP_AGENTS_FOLDER_PREFIX = "agentic-helper-";
 
     /**
-     * Extracts all agent JSON files from the classpath to a temporary directory.
-     * If already extracted in this JVM session, returns the existing directory path.
+     * Cache of already-extracted directories keyed by classpath sub-path. Allows several
+     * configured paths to coexist in the same JVM (e.g. tests + production paths) without
+     * stepping on each other's temp directories.
+     */
+    private static final Map<String, Path> extractedDirectories = new HashMap<>();
+
+    /**
+     * Extracts all agent JSON files from the given classpath sub-path to a temporary directory.
+     * If already extracted in this JVM session for the same sub-path, returns the existing directory path.
      *
+     * @param classpathSubPath sub-path inside the classpath where agent JSON files live (e.g.
+     *                         "agents" or "prompts/agents"). Required, non-null, non-empty.
      * @return Path to the directory containing extracted agent JSON files
      * @throws IOException if extraction fails
      */
-    public static synchronized Path extractAgentsFromClasspath() throws IOException {
-        if (extractedAgentDirectory != null && Files.exists(extractedAgentDirectory)) {
-            logger.debug("♻️  Using existing extracted agents directory: {}", extractedAgentDirectory);
-            return extractedAgentDirectory;
+    public static synchronized Path extractAgentsFromClasspath(String classpathSubPath) throws IOException {
+        if (classpathSubPath == null || classpathSubPath.trim().isEmpty()) {
+            throw new IllegalArgumentException("classpathSubPath is required (non-null, non-empty)");
         }
 
-        // Create temporary directory for agents (clean old files first)
-        Path tempDir = Paths.get(System.getProperty("java.io.tmpdir"), TEMP_AGENTS_FOLDER);
+        // Normalize: strip leading/trailing slashes (we add the leading slash later when needed)
+        String normalizedSubPath = classpathSubPath.trim();
+        while (normalizedSubPath.startsWith("/")) {
+            normalizedSubPath = normalizedSubPath.substring(1);
+        }
+        while (normalizedSubPath.endsWith("/")) {
+            normalizedSubPath = normalizedSubPath.substring(0, normalizedSubPath.length() - 1);
+        }
+        if (normalizedSubPath.isEmpty()) {
+            throw new IllegalArgumentException("classpathSubPath cannot be just slashes");
+        }
+
+        Path cached = extractedDirectories.get(normalizedSubPath);
+        if (cached != null && Files.exists(cached)) {
+            logger.debug("♻️  Using existing extracted agents directory for '{}': {}", normalizedSubPath, cached);
+            return cached;
+        }
+
+        // Per-sub-path temp folder name to avoid collisions when multiple apps coexist on the same host.
+        String tempFolderName = TEMP_AGENTS_FOLDER_PREFIX + normalizedSubPath.replace('/', '-');
+        Path tempDir = Paths.get(System.getProperty("java.io.tmpdir"), tempFolderName);
+
+        // Clean stale .json files in the temp dir (in case of redeploys with different agent sets)
         if (Files.exists(tempDir)) {
             try (Stream<Path> oldFiles = Files.list(tempDir)) {
                 oldFiles.filter(p -> p.toString().endsWith(".json")).forEach(p -> {
@@ -48,14 +76,14 @@ public class AgentResourceExtractor {
         }
         Files.createDirectories(tempDir);
 
-        logger.info("📦 Extracting agent JSON files from JAR to: {}", tempDir);
+        logger.info("📦 Extracting agent JSON files from JAR classpath '{}' to: {}", normalizedSubPath, tempDir);
 
-        // Find all agent JSON files in classpath
-        URL agentsUrl = AgentResourceExtractor.class.getClassLoader().getResource("agents");
+        // Find the configured sub-path in the classpath
+        URL agentsUrl = AgentResourceExtractor.class.getClassLoader().getResource(normalizedSubPath);
 
         if (agentsUrl == null) {
-            logger.warn("⚠️  No 'agents' directory found in classpath");
-            extractedAgentDirectory = tempDir;
+            logger.warn("⚠️  No '{}' directory found in classpath", normalizedSubPath);
+            extractedDirectories.put(normalizedSubPath, tempDir);
             return tempDir;
         }
 
@@ -63,25 +91,23 @@ public class AgentResourceExtractor {
 
         // Handle both JAR and file system resources
         if (agentsUrl.getProtocol().equals("jar")) {
-            // Extract from JAR
-            successCount = extractFromJar(agentsUrl, tempDir);
+            successCount = extractFromJar(agentsUrl, tempDir, normalizedSubPath);
         } else if (agentsUrl.getProtocol().equals("file")) {
-            // Copy from file system
             successCount = extractFromFileSystem(agentsUrl, tempDir);
         }
 
-        extractedAgentDirectory = tempDir;
+        extractedDirectories.put(normalizedSubPath, tempDir);
         logger.info("✅ Successfully extracted {} agent JSON file(s)", successCount);
 
         return tempDir;
     }
 
-    private static int extractFromJar(URL jarUrl, Path targetDir) throws IOException {
+    private static int extractFromJar(URL jarUrl, Path targetDir, String classpathSubPath) throws IOException {
         URI uri = URI.create(jarUrl.toString());
         int successCount = 0;
 
         try (FileSystem fs = FileSystems.newFileSystem(uri, Collections.emptyMap())) {
-            Path agentsPath = fs.getPath("/agents");
+            Path agentsPath = fs.getPath("/" + classpathSubPath);
 
             try (Stream<Path> paths = Files.walk(agentsPath, 1)) {
                 for (Path path : paths.toArray(Path[]::new)) {
@@ -123,18 +149,22 @@ public class AgentResourceExtractor {
     }
 
     /**
-     * Gets the extracted agent directory path without performing extraction.
+     * Gets the most recently extracted agent directory path without performing extraction.
+     * If multiple sub-paths were extracted, returns one of them (no specific guarantee).
      *
-     * @return Path to extracted agents directory, or null if not yet extracted
+     * @return Path to an extracted agents directory, or null if nothing has been extracted
      */
     public static Path getExtractedAgentDirectory() {
-        return extractedAgentDirectory;
+        if (extractedDirectories.isEmpty()) {
+            return null;
+        }
+        return extractedDirectories.values().iterator().next();
     }
 
     /**
-     * Clears the cached directory path (for testing purposes).
+     * Clears all cached directory paths (for testing purposes).
      */
     static void resetCache() {
-        extractedAgentDirectory = null;
+        extractedDirectories.clear();
     }
 }
