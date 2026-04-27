@@ -260,6 +260,7 @@ public class AgentManager {
                     .maxToolTokenOutput(definition.getMaxToolTokenOutput())
                     .reasoningEffort(definition.getReasoningEffort())
                     .retryConfig(definition.getRetryConfig())
+                    .instances(definition.getInstances())
                     .build();
 
             agents.put(agent.getId(), agent);

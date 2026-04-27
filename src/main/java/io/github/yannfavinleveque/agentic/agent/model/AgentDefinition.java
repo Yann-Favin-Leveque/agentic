@@ -211,4 +211,38 @@ public class AgentDefinition {
     @JsonAlias("retry_config")
     private RetryConfig retryConfig;
 
+    /**
+     * Optional allow-list of instance IDs this agent is restricted to.
+     * When present and non-empty, the {@code InstanceRouter} only picks instances
+     * whose {@code id} is in this list AND that expose the requested model.
+     * <p>
+     * Format on disk: JSON array of strings under the field name {@code "instances"}.
+     * The legacy field {@code "instanceId"} (single string) is also supported for
+     * backward compat — it is mapped to a singleton list at parse time via
+     * {@link #setInstanceId(String)}.
+     * <p>
+     * When absent/empty: the router falls back to round-robin over every
+     * enabled instance exposing the model (legacy behavior).
+     */
+    @JsonProperty("instances")
+    private List<String> instances;
+
+    /**
+     * Backward-compat setter for the legacy {@code "instanceId"} JSON field.
+     * Maps a single id to a singleton {@link #instances} list, but only if
+     * {@code instances} has not already been populated (the new field wins
+     * during a migration where both are present).
+     *
+     * @param instanceId Legacy single-instance id, or {@code null} to skip.
+     */
+    @JsonProperty("instanceId")
+    public void setInstanceId(String instanceId) {
+        if (instanceId == null || instanceId.isEmpty()) {
+            return;
+        }
+        if (this.instances == null || this.instances.isEmpty()) {
+            this.instances = java.util.Collections.singletonList(instanceId);
+        }
+    }
+
 }

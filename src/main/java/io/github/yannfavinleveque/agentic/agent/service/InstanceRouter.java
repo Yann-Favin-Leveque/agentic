@@ -53,19 +53,56 @@ public class InstanceRouter {
      * @throws NoInstanceAvailableException if no instance has the model
      */
     public int getNextInstanceForModel(String model) {
+        return getNextInstanceForModel(model, null);
+    }
+
+    /**
+     * Gets the next instance for a specific model using round-robin, optionally
+     * filtered by an allow-list of instance ids.
+     * <p>
+     * When {@code allowedIds} is {@code null} or empty, this method behaves identically
+     * to {@link #getNextInstanceForModel(String)}. Otherwise, candidate instances must
+     * (a) have an {@code id} that appears in {@code allowedIds} AND (b) expose the
+     * requested model. Round-robin is applied within the resulting candidate set,
+     * keyed on {@code model} so the rotation is shared with the unfiltered overload
+     * for the same model — adequate because the candidate set is a subset of the
+     * full compatible set.
+     *
+     * @param model      Model name
+     * @param allowedIds Allow-list of instance ids (null/empty → no filter)
+     * @return Instance index
+     * @throws NoInstanceAvailableException if no instance matches both the model
+     *         and the allow-list (message includes the allow-list constraint)
+     */
+    public int getNextInstanceForModel(String model, List<String> allowedIds) {
         if (instances.isEmpty()) {
             throw NoInstanceAvailableException.degradedMode();
         }
 
-        // Find instances that have this model
+        boolean hasAllowList = allowedIds != null && !allowedIds.isEmpty();
+
+        // Find instances that have this model AND (if allow-list set) are in it.
         List<Integer> compatibleIndices = new java.util.ArrayList<>();
         for (int i = 0; i < instances.size(); i++) {
-            if (instances.get(i).getDeployedModels().contains(model)) {
-                compatibleIndices.add(i);
+            Instance inst = instances.get(i);
+            if (!inst.getDeployedModels().contains(model)) {
+                continue;
             }
+            if (hasAllowList && !allowedIds.contains(inst.getId())) {
+                continue;
+            }
+            compatibleIndices.add(i);
         }
 
         if (compatibleIndices.isEmpty()) {
+            if (hasAllowList) {
+                List<String> allInstanceIds = instances.stream()
+                        .map(Instance::getId)
+                        .collect(Collectors.toList());
+                throw new NoInstanceAvailableException(
+                        "No instance matching model '" + model + "' is allowed for this agent. "
+                                + "Allow-list: " + allowedIds + ", available instances: " + allInstanceIds);
+            }
             List<String> availableModels = instances.stream()
                     .flatMap(inst -> inst.getDeployedModels().stream())
                     .distinct()

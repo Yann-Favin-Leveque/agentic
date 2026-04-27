@@ -307,4 +307,16 @@ public class Agent {
      */
     private RetryConfig retryConfig;
 
+    /**
+     * Optional allow-list of instance IDs this agent is restricted to.
+     * When non-null and non-empty, the InstanceRouter only picks instances
+     * whose {@code id} is in this list AND that expose the requested model.
+     * When null/empty, the router falls back to legacy round-robin over every
+     * enabled instance exposing the model.
+     * <p>
+     * Loaded from {@link io.github.yannfavinleveque.agentic.agent.model.AgentDefinition#getInstances()}
+     * (or from the legacy {@code instanceId} JSON field which is mapped to a singleton list).
+     */
+    private List<String> instances;
+
 }

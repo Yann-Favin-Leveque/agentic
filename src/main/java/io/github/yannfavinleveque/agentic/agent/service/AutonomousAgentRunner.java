@@ -276,6 +276,7 @@ public class AutonomousAgentRunner {
                 .autonomous(false)
                 .maxIterations(original.getMaxIterations())
                 .maxToolTokenOutput(original.getMaxToolTokenOutput())
+                .instances(original.getInstances())
                 .build();
     }
 

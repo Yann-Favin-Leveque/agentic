@@ -336,7 +336,7 @@ public class UnifiedRequestService {
                     new AgentException(AgentException.ErrorCode.NO_INSTANCE_AVAILABLE, "No instances configured"));
         }
 
-        int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
+        int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel(), agent.getInstances());
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
@@ -720,7 +720,7 @@ public class UnifiedRequestService {
                     new AgentException(AgentException.ErrorCode.NO_INSTANCE_AVAILABLE, "No instances configured"));
         }
 
-        int instanceIdx = instanceRouter.getNextInstanceForModel(tempAgent.getModel());
+        int instanceIdx = instanceRouter.getNextInstanceForModel(tempAgent.getModel(), tempAgent.getInstances());
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, tempAgent.getModel());
 
@@ -965,7 +965,7 @@ public class UnifiedRequestService {
                     new AgentException(AgentException.ErrorCode.NO_INSTANCE_AVAILABLE, "No instances configured"));
         }
 
-        int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel());
+        int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel(), agent.getInstances());
         Instance instance = instanceRouter.getInstance(instanceIdx);
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 

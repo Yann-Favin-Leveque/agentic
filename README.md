@@ -1140,6 +1140,12 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Changelog
 
+### v1.20.2
+- **New**: `AgentDefinition.instances` — optional JSON array of allow-listed instance ids (e.g. `"instances": ["openai-main"]`). When non-empty, the `InstanceRouter` only routes the agent's requests to instances whose id is in the list AND that expose the requested model. When absent/empty, legacy round-robin over every compatible instance is preserved.
+- **New**: `InstanceRouter.getNextInstanceForModel(String model, List<String> allowedIds)` overload — filters by allow-list before round-robin. Throws `NoInstanceAvailableException` with an explicit message when no allowed instance exposes the model. The existing `getNextInstanceForModel(String)` overload is unchanged and now delegates to the new one with a `null` allow-list.
+- **Backward compat**: legacy `"instanceId": "<id>"` in agent JSON is auto-mapped to a singleton `instances: ["<id>"]` at parse time. If both `instances` and `instanceId` are present, `instances` wins.
+- **Changed**: `Agent` now carries an `instances` field, populated from `AgentDefinition.getInstances()` by `AgentManager.loadAgentFromFile` and propagated to autonomous virtual children by `AutonomousAgentRunner.buildVirtualAgent`. Call sites in `UnifiedRequestService` that have an `Agent` (`requestAgent` with images, `requestModel`, `requestAgent` V2) now pass `agent.getInstances()` to the router. Embedding/image/chat-completion call sites that only have a model continue to use the unfiltered overload (no agent allow-list available).
+
 ### v1.20.1
 - **Fix**: `AgentResourceExtractor` now honors the configured `agentJsonFolderPath` sub-path instead of always looking up `agents/` on the classpath. Configuring `agentJsonFolderPath("src/main/resources/prompts/agents")` (or `classpath:prompts/agents`) now correctly extracts JSON files from the matching classpath sub-directory. Backward compatible: `null`, empty, `"src/main/resources/agents"`, and `"classpath:agents"` all resolve to the previous `agents` sub-path. Filesystem paths are still returned as-is. Per-sub-path temp directories (`agentic-helper-<sub-path>`) avoid collisions between coexisting apps.
 - **API change** (internal): `AgentResourceExtractor.extractAgentsFromClasspath()` is now `extractAgentsFromClasspath(String classpathSubPath)`. End users should not be impacted — the method is invoked only by `AgentServiceConfig.resolveAgentJsonFolderPath()`, which derives the sub-path automatically from `agentJsonFolderPath`.
