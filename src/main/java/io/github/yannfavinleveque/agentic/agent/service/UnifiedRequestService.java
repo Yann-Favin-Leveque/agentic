@@ -243,6 +243,21 @@ public class UnifiedRequestService {
     }
 
     /**
+     * Sends a stateless request to a pre-resolved {@link Agent} with conversation history.
+     * Used by {@link AgentService} when it needs to rewrite agent fields (e.g. Mustache
+     * variable substitution into {@code instructions}) before the request, without mutating
+     * the registered agent shared by other concurrent calls.
+     *
+     * @param agent       Resolved agent (caller is responsible for not mutating it during the call)
+     * @param userMessage Current user message
+     * @param history     Previous conversation messages (can be null or empty)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(Agent agent, String userMessage, List<Message> history) {
+        return attemptRequestWithRetry(agent, userMessage, history, 0);
+    }
+
+    /**
      * Sends a stateless request without history (single-turn).
      *
      * @param agentId     Agent ID
@@ -277,7 +292,16 @@ public class UnifiedRequestService {
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history,
             List<String> imagesBase64) {
         Agent agent = agentManager.getAgent(agentId);
+        return requestAgent(agent, userMessage, history, imagesBase64);
+    }
 
+    /**
+     * Vision overload that takes a pre-resolved {@link Agent} (e.g. with Mustache variables
+     * already substituted into {@code instructions}). See {@link #requestAgent(Agent, String, List)}
+     * for rationale.
+     */
+    public CompletableFuture<AgentResult> requestAgent(Agent agent, String userMessage, List<Message> history,
+            List<String> imagesBase64) {
         // Build content parts: text + images
         List<Message.ContentPart> contentParts = new ArrayList<>();
         contentParts.add(Message.ContentPart.text(userMessage));

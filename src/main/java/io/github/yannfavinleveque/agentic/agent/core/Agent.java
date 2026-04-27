@@ -20,7 +20,7 @@ import java.util.List;
  * see AgentService see AgentDefinition
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class Agent {

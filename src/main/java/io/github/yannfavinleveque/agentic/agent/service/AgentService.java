@@ -7,6 +7,8 @@ import io.github.yannfavinleveque.agentic.agent.config.InstanceConfig;
 import io.github.yannfavinleveque.agentic.agent.core.Agent;
 import io.github.yannfavinleveque.agentic.agent.core.Instance;
 import io.github.yannfavinleveque.agentic.agent.core.Provider;
+import io.github.yannfavinleveque.agentic.agent.exception.MissingPromptVariableException;
+import io.github.yannfavinleveque.agentic.agent.util.PromptTemplate;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
 import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
@@ -407,10 +409,31 @@ public class AgentService {
      * @return CompletableFuture with the agent's response as AgentResult
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, String conversationId) {
+        return requestAgent(agentId, userMessage, conversationId, (Map<String, Object>) null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String, String)} but with Mustache prompt variables.
+     * <p>
+     * Any {@code {{name}}} placeholder in the agent's {@code instructions} is replaced with
+     * {@code String.valueOf(promptVars.get("name"))} before the system prompt is sent to the LLM.
+     * If a referenced variable is missing (or its value is {@code null}), throws
+     * {@link MissingPromptVariableException}. {@code userMessage} and {@code history} are
+     * NOT scanned — the user is free to use {@code {{...}}} literally in their messages.
+     *
+     * @param agentId        Agent ID
+     * @param userMessage    Current user message
+     * @param conversationId Conversation ID, or null for single-turn
+     * @param promptVars     Variables to substitute into the agent's instructions (may be null/empty)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, String conversationId,
+            Map<String, Object> promptVars) {
         // If agent is autonomous, delegate to the autonomous runner (config-based executors)
         Agent agent = agentManager.getAgent(agentId);
-        if (Boolean.TRUE.equals(agent.getAutonomous())) {
-            return autonomousRunner.run(agent, userMessage, conversationId, null);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        if (Boolean.TRUE.equals(resolvedAgent.getAutonomous())) {
+            return autonomousRunner.run(resolvedAgent, userMessage, conversationId, null);
         }
 
         List<Message> history = conversationManager.getHistory(conversationId);
@@ -418,7 +441,7 @@ public class AgentService {
         // Add user message to conversation before request
         conversationManager.addUserMessage(conversationId, userMessage);
 
-        return unifiedRequestService.requestAgent(agentId, userMessage, history)
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, history)
                 .whenComplete((result, error) -> {
                     if (error == null && result != null) {
                         // Never store null content (causes HTTP 400 on next API call)
@@ -452,7 +475,24 @@ public class AgentService {
      * @return CompletableFuture with the agent's response as AgentResult
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history) {
-        return unifiedRequestService.requestAgent(agentId, userMessage, history);
+        return requestAgent(agentId, userMessage, history, (Map<String, Object>) null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String, List)} but with Mustache prompt variables.
+     * See {@link #requestAgent(String, String, String, Map)} for the substitution semantics.
+     *
+     * @param agentId     Agent ID
+     * @param userMessage Current user message
+     * @param history     Previous conversation messages (can be null or empty)
+     * @param promptVars  Variables to substitute into the agent's instructions (may be null/empty)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history,
+            Map<String, Object> promptVars) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, history);
     }
 
     /**
@@ -463,12 +503,22 @@ public class AgentService {
      * @return CompletableFuture with the agent's response as AgentResult
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage) {
+        return requestAgent(agentId, userMessage, (Map<String, Object>) null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String)} but with Mustache prompt variables.
+     * See {@link #requestAgent(String, String, String, Map)} for the substitution semantics.
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage,
+            Map<String, Object> promptVars) {
         // If agent is autonomous, delegate to the autonomous runner (config-based executors)
         Agent agent = agentManager.getAgent(agentId);
-        if (Boolean.TRUE.equals(agent.getAutonomous())) {
-            return autonomousRunner.run(agent, userMessage, null, null);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        if (Boolean.TRUE.equals(resolvedAgent.getAutonomous())) {
+            return autonomousRunner.run(resolvedAgent, userMessage, null, null);
         }
-        return unifiedRequestService.requestAgent(agentId, userMessage);
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, (List<Message>) null);
     }
 
     /**
@@ -485,7 +535,24 @@ public class AgentService {
      * @return CompletableFuture with the agent's response
      */
     public CompletableFuture<AgentResult> requestAgentVision(String agentId, String userMessage, String imageBase64) {
-        return unifiedRequestService.requestAgent(agentId, userMessage, imageBase64);
+        return requestAgentVision(agentId, userMessage, imageBase64, (Map<String, Object>) null);
+    }
+
+    /**
+     * Same as {@link #requestAgentVision(String, String, String)} but with Mustache prompt
+     * variables. See {@link #requestAgent(String, String, String, Map)} for the semantics.
+     *
+     * @param agentId      Agent ID
+     * @param userMessage  Text prompt for the image
+     * @param imageBase64  Base64-encoded image
+     * @param promptVars   Variables to substitute into the agent's instructions (may be null/empty)
+     */
+    public CompletableFuture<AgentResult> requestAgentVision(String agentId, String userMessage, String imageBase64,
+            Map<String, Object> promptVars) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, null,
+                imageBase64 != null ? List.of(imageBase64) : null);
     }
 
     /**
@@ -507,12 +574,24 @@ public class AgentService {
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, String conversationId,
             List<String> imagesBase64) {
+        return requestAgent(agentId, userMessage, conversationId, imagesBase64, null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String, String, List)} but with Mustache prompt
+     * variables. See {@link #requestAgent(String, String, String, Map)} for the semantics.
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, String conversationId,
+            List<String> imagesBase64, Map<String, Object> promptVars) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+
         List<Message> history = conversationManager.getHistory(conversationId);
 
         // Add user message with images to conversation
         conversationManager.addUserMessageWithImages(conversationId, userMessage, imagesBase64);
 
-        return unifiedRequestService.requestAgent(agentId, userMessage, history, imagesBase64)
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, history, imagesBase64)
                 .whenComplete((result, error) -> {
                     if (error == null && result != null) {
                         String content = result.getContent() != null ? result.getContent() : "";
@@ -544,7 +623,18 @@ public class AgentService {
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history,
             List<String> imagesBase64) {
-        return unifiedRequestService.requestAgent(agentId, userMessage, history, imagesBase64);
+        return requestAgent(agentId, userMessage, history, imagesBase64, null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String, List, List)} but with Mustache prompt
+     * variables. See {@link #requestAgent(String, String, String, Map)} for the semantics.
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history,
+            List<String> imagesBase64, Map<String, Object> promptVars) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        return unifiedRequestService.requestAgent(resolvedAgent, userMessage, history, imagesBase64);
     }
 
     // ==================== AUTONOMOUS AGENT REQUESTS ====================
@@ -579,12 +669,23 @@ public class AgentService {
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage,
                                                        String conversationId, ToolExecutor toolExecutor) {
+        return requestAgent(agentId, userMessage, conversationId, toolExecutor, null);
+    }
+
+    /**
+     * Same as {@link #requestAgent(String, String, String, ToolExecutor)} but with Mustache
+     * prompt variables. See {@link #requestAgent(String, String, String, Map)} for semantics.
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage,
+                                                       String conversationId, ToolExecutor toolExecutor,
+                                                       Map<String, Object> promptVars) {
         Agent agent = agentManager.getAgent(agentId);
-        if (!Boolean.TRUE.equals(agent.getAutonomous())) {
+        Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
+        if (!Boolean.TRUE.equals(resolvedAgent.getAutonomous())) {
             // Not autonomous - fall back to normal request, ignore toolExecutor
-            return requestAgent(agentId, userMessage, conversationId);
+            return requestAgent(agentId, userMessage, conversationId, promptVars);
         }
-        return autonomousRunner.run(agent, userMessage, conversationId, toolExecutor);
+        return autonomousRunner.run(resolvedAgent, userMessage, conversationId, toolExecutor);
     }
 
     /**
@@ -1113,6 +1214,32 @@ public class AgentService {
     }
 
     // ==================== PRIVATE METHODS ====================
+
+    /**
+     * Returns an {@link Agent} whose {@code instructions} field has had every
+     * {@code {{name}}} placeholder substituted from {@code promptVars}.
+     * <p>
+     * If the original instructions contain no placeholders OR {@code promptVars}
+     * is null/empty AND the template contains no placeholders, the original
+     * agent is returned unchanged (avoids needless cloning).
+     * <p>
+     * If the template contains placeholders, a new {@link Agent} is produced via
+     * {@code toBuilder()} so the registered agent shared with other concurrent
+     * callers is never mutated.
+     *
+     * @throws MissingPromptVariableException if a referenced variable is missing
+     */
+    private Agent resolveAgentInstructions(Agent agent, Map<String, Object> promptVars) {
+        if (agent == null || agent.getInstructions() == null || agent.getInstructions().isEmpty()) {
+            return agent;
+        }
+        // Fast path: no placeholders in the template → no work, no clone.
+        if (PromptTemplate.extractVariables(agent.getInstructions()).isEmpty()) {
+            return agent;
+        }
+        String rendered = PromptTemplate.render(agent.getInstructions(), promptVars, agent.getId());
+        return agent.toBuilder().instructions(rendered).build();
+    }
 
     /**
      * Gets the set of allowed providers from the environment variable or system property.

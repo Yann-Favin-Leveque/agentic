@@ -29,6 +29,7 @@ public class AgentException extends RuntimeException {
         // Configuration errors
         NO_INSTANCE_AVAILABLE("No AI instance available for this operation"),
         INVALID_CONFIGURATION("Invalid service configuration"),
+        MISSING_PROMPT_VARIABLE("Prompt template references a variable that was not provided"),
 
         // Agent errors
         AGENT_NOT_FOUND("Agent not found"),
