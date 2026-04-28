@@ -1,5 +1,6 @@
 package io.github.yannfavinleveque.agentic.agent.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
@@ -43,9 +44,33 @@ public class ClaudeRequest {
     private Integer maxTokens;
 
     /**
-     * System prompt (optional)
+     * System prompt as a plain string (optional). For prompt caching support, use {@link #systemBlocks}
+     * instead — Anthropic only honors {@code cache_control} when the system field is an array of
+     * content blocks. Lombok-generated {@code getSystem()} is hidden from JSON via {@link JsonIgnore};
+     * serialization goes through {@link #getSystemForSerialization()}.
      */
+    @JsonIgnore
     private String system;
+
+    /**
+     * System prompt as an array of content blocks (optional, takes precedence over {@link #system} when
+     * set). Required form for prompt caching: each block can carry a {@code cache_control: {type:
+     * "ephemeral"}} marker.
+     */
+    @JsonIgnore
+    private List<ClaudeContentBlock> systemBlocks;
+
+    /**
+     * Picks systemBlocks if set, otherwise falls back to the string {@link #system}. Anthropic accepts
+     * either form on the {@code system} field.
+     */
+    @JsonProperty("system")
+    public Object getSystemForSerialization() {
+        if (systemBlocks != null && !systemBlocks.isEmpty()) {
+            return systemBlocks;
+        }
+        return system;
+    }
 
     /**
      * List of messages in the conversation
@@ -86,15 +111,14 @@ public class ClaudeRequest {
     private Object toolChoice;
 
     /**
-     * Extended thinking configuration (optional).
-     * When enabled, Claude will use internal reasoning before responding.
-     * Format: {"type": "enabled", "budget_tokens": 1024}
+     * Extended thinking configuration (optional). When enabled, Claude will use internal reasoning
+     * before responding. Format: {"type": "enabled", "budget_tokens": 1024}
      */
     private Map<String, Object> thinking;
 
     /**
-     * Represents a single message in Claude conversation.
-     * Content can be a string (text-only) or a list of content blocks (multimodal).
+     * Represents a single message in Claude conversation. Content can be a string (text-only) or a list
+     * of content blocks (multimodal).
      */
     @Data
     @Builder
@@ -107,21 +131,21 @@ public class ClaudeRequest {
         private String role;
 
         /**
-         * Text content of the message (for simple text-only messages).
-         * Use contentBlocks for multimodal messages.
+         * Text content of the message (for simple text-only messages). Use contentBlocks for multimodal
+         * messages.
          */
         private String content;
 
         /**
-         * Multimodal content blocks (for messages with images).
-         * When serialized, replaces 'content' with array of blocks.
+         * Multimodal content blocks (for messages with images). When serialized, replaces 'content' with
+         * array of blocks.
          */
         @JsonProperty("content")
         private List<ClaudeContentBlock> contentBlocks;
 
         /**
-         * Custom getter to return contentBlocks if set, otherwise content string.
-         * Jackson will serialize this as the 'content' field.
+         * Custom getter to return contentBlocks if set, otherwise content string. Jackson will serialize
+         * this as the 'content' field.
          */
         @JsonProperty("content")
         public Object getContentForSerialization() {
@@ -134,8 +158,7 @@ public class ClaudeRequest {
     }
 
     /**
-     * Represents a content block in a Claude message.
-     * Can be text, image, or other types.
+     * Represents a content block in a Claude message. Can be text, image, or other types.
      */
     @Data
     @Builder
@@ -158,7 +181,8 @@ public class ClaudeRequest {
         private ClaudeImageSource source;
 
         /**
-         * Tool use ID (for tool_use blocks: the ID of this call; for tool_result blocks: the ID being responded to).
+         * Tool use ID (for tool_use blocks: the ID of this call; for tool_result blocks: the ID being
+         * responded to).
          */
         @JsonProperty("tool_use_id")
         private String toolUseId;
@@ -184,12 +208,33 @@ public class ClaudeRequest {
         private String content;
 
         /**
+         * Optional prompt-caching marker. When set to {@code {"type": "ephemeral"}}, Anthropic caches
+         * everything up to and including this block for ~5 minutes; subsequent requests with an identical
+         * prefix get a 90% input-cost discount. Only honored by direct Anthropic — Azure Anthropic ignores
+         * it.
+         */
+        @JsonProperty("cache_control")
+        private Map<String, Object> cacheControl;
+
+        /**
          * Creates a text content block.
          */
         public static ClaudeContentBlock text(String text) {
             return ClaudeContentBlock.builder()
                     .type("text")
                     .text(text)
+                    .build();
+        }
+
+        /**
+         * Creates a text content block flagged for prompt caching ({@code cache_control: {type:
+         * "ephemeral"}}). Use on the system prompt or the last reusable message to bound a cache prefix.
+         */
+        public static ClaudeContentBlock textCached(String text) {
+            return ClaudeContentBlock.builder()
+                    .type("text")
+                    .text(text)
+                    .cacheControl(Map.of("type", "ephemeral"))
                     .build();
         }
 
@@ -249,6 +294,7 @@ public class ClaudeRequest {
                     .input(input)
                     .build();
         }
+
     }
 
     /**
@@ -279,6 +325,7 @@ public class ClaudeRequest {
          * Base64-encoded image data (when type is "base64")
          */
         private String data;
+
     }
 
     /**
@@ -315,6 +362,13 @@ public class ClaudeRequest {
          */
         @JsonProperty("max_uses")
         private Integer maxUses;
+
+        /**
+         * Optional prompt-caching marker. Set on the LAST tool of the array to mark all tools as cacheable
+         * as one block. Only honored by direct Anthropic — Azure ignores it.
+         */
+        @JsonProperty("cache_control")
+        private Map<String, Object> cacheControl;
 
         // ==================== FACTORY METHODS ====================
 

@@ -1,8 +1,8 @@
 # Agentic-Helper
 
-A Java library for multi-provider AI orchestration (OpenAI, Azure OpenAI, Anthropic/Claude, Azure Anthropic/Claude).
+A Java library for multi-provider AI orchestration. Out of the box: OpenAI, Azure OpenAI, Anthropic/Claude, Azure Anthropic, Mistral, Azure Mistral, xAI Grok, Azure Grok, DeepSeek, Google Gemini — plus a JSON-driven `Provider.CUSTOM` for any other OpenAI-compatible endpoint.
 
-High-level `AgentService` with rate limiting, retries, and structured outputs.
+High-level `AgentService` with rate limiting, retries, structured outputs, and per-provider feature gating.
 
 ## Credits
 
@@ -10,16 +10,16 @@ This project was originally forked from [simple-openai](https://github.com/sashi
 
 **Agentic-Helper** adds:
 - `AgentService` for high-level agent orchestration
-- Multi-provider support (OpenAI, Azure OpenAI, Anthropic/Claude, Azure Anthropic/Claude)
-- JSON-based instance configuration
-- Automatic rate limiting and retries
-- Structured outputs with typed results
-- Stateless API (no threads/assistants required)
-- **Autonomous Agent Mode** - agents run multi-step tool loops independently
+- **11 built-in providers** + a JSON-spec `Provider.CUSTOM` for anything else
+- JSON-based instance configuration with per-instance rate limiting
+- Automatic retries with exponential backoff
+- Structured outputs with typed results (JSON Schema)
+- Stateless API on top of OpenAI Responses API + Anthropic Messages API + Chat Completions
+- **Autonomous Agent Mode** — agents run multi-step tool loops independently
 - Web search, code interpreter, and function calling tools
-- Vision (multimodal) support
-- Image generation (DALL-E) support
-- Embeddings support
+- Vision (multimodal) support, image generation (DALL-E), embeddings
+- Reasoning models support (o-series, Magistral, Grok-3-mini/4, DeepSeek-reasoner, Gemini-2.5-thinking)
+- Custom per-model pricing for unknown models (`CustomProviderSpec.modelPricing`)
 
 ## Table of Contents
 - [Installation](#installation)
@@ -71,7 +71,7 @@ Then add to your project's `pom.xml`:
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.22.0</version>
+    <version>1.23.0</version>
 </dependency>
 ```
 
@@ -83,26 +83,7 @@ The library is published on Maven Central. No extra repository configuration nee
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.22.0</version>
-</dependency>
-```
-
-### Option 3: GitHub Packages
-
-Add the repository to your `pom.xml`:
-
-```xml
-<repositories>
-    <repository>
-        <id>github</id>
-        <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic</url>
-    </repository>
-</repositories>
-
-<dependency>
-    <groupId>io.github.yann-favin-leveque</groupId>
-    <artifactId>agentic-helper</artifactId>
-    <version>1.22.0</version>
+    <version>1.23.0</version>
 </dependency>
 ```
 
@@ -209,7 +190,7 @@ Set the `LLM_INSTANCES` environment variable with your provider configurations:
     "id": "anthropic-main",
     "url": "https://api.anthropic.com",
     "key": "sk-ant-xxx",
-    "models": "claude-opus-4-5,claude-sonnet-4-5,claude-haiku-4-5",
+    "models": "claude-opus-4-7,claude-sonnet-4-7,claude-haiku-4-7",
     "provider": "anthropic",
     "enabled": true
   },
@@ -217,7 +198,7 @@ Set the `LLM_INSTANCES` environment variable with your provider configurations:
     "id": "azure-anthropic",
     "url": "https://my-resource.services.ai.azure.com",
     "key": "azure-key",
-    "models": "claude-sonnet-4-5,claude-haiku-4-5",
+    "models": "claude-sonnet-4-7,claude-haiku-4-7",
     "provider": "azure-anthropic",
     "apiVersion": "2023-06-01",
     "enabled": true
@@ -1095,10 +1076,10 @@ AgentService supports eleven built-in providers plus a JSON-driven CUSTOM provid
 
 | Provider | Description | Models |
 |----------|-------------|--------|
-| `openai` | OpenAI API direct | gpt-4o, gpt-4o-mini, dall-e-3, text-embedding-3-small |
-| `azure-openai` | Azure OpenAI | gpt-4o, gpt-5.1-chat (deployed models) |
-| `anthropic` | Anthropic API direct | claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5 |
-| `azure-anthropic` | Azure AI (Claude) | claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-5 |
+| `openai` | OpenAI API direct | gpt-5.5, gpt-5.4, gpt-5.2, gpt-5.1, gpt-5, gpt-4.1, gpt-4o, o1/o3/o4 series, dall-e-3, text-embedding-3-* |
+| `azure-openai` | Azure OpenAI | OpenAI models deployed on Azure |
+| `anthropic` | Anthropic API direct | claude-opus-4-7, claude-sonnet-4-7, claude-haiku-4-7, claude-*-4-6, claude-*-4-5, claude-3-* |
+| `azure-anthropic` | Azure AI (Claude) | Same Claude models, deployed on Azure AI Foundry |
 | `mistral` | Mistral La Plateforme | mistral-large-latest, pixtral-large-latest, codestral-latest, magistral-medium-latest, ministral-* |
 | `azure-mistral` | Mistral via Azure AI Foundry | mistral-large-* (deployed) |
 | `grok` | xAI Grok (api.x.ai) | grok-4, grok-4-fast, grok-3, grok-3-mini, grok-2-vision-1212, grok-code-fast-1 |
@@ -1440,6 +1421,25 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 
 ## Changelog
+
+### v1.23.0
+- **4 new native providers**: `grok` (xAI on `api.x.ai`), `azure-grok` (Grok on Azure AI Foundry), `deepseek` (`api.deepseek.com`), and `gemini` (Google via the OpenAI-compat shim at `generativelanguage.googleapis.com/v1beta/openai/...`). All four use the OpenAI Chat Completions stateless wire format, joining Mistral on the same code path.
+- **Routing precedence in `UnifiedRequestService`** is now `custom > anthropic > mistral > grok > deepseek > gemini > openai`, applied symmetrically in all three executor sites (`executeRequestAgentWithImagesAfterPermit`, `executeRequestModelInternalAfterPermit`, `executeRequestAfterPermit`). `Provider.CUSTOM` short-circuits everything; otherwise model-name prefix matching dispatches per family.
+- **Factorization**: introduced `executeChatCompletionsCompatRequest(agent, messages, instance, BodyBuilder, responseParser)` private helper. The 4 specific executors (`executeMistralRequest`, `executeGrokRequest`, `executeDeepSeekRequest`, `executeGeminiRequest`) are now 4-6 line wrappers — saves ~120 LOC vs duplication and keeps cross-provider behavior consistent.
+- **DeepSeek `reasoning_content`**: `deepseek-reasoner` returns a non-standard `reasoning_content` field separate from `content`. The new `extractChatCompletionsContentWithReasoning` parser extracts it and prepends it wrapped in `[REASONING]\n...\n[/REASONING]\n\n` markers to the parsed text, so the chain-of-thought is surfaced rather than silently dropped. Behavior is byte-for-byte identical to the standard parser when `reasoning_content` is absent.
+- **`GrokAdapter`, `DeepSeekAdapter`, `GeminiAdapter`** — static helpers (mirroring `MistralAdapter`): `is<Family>Model`, `isReasoningModel`, `buildRequestBody`. Reasoning-effort filtering: only `grok-3-mini`/`grok-4*` accept `reasoning_effort`; only `gemini-2.5-pro`/`gemini-2.5-flash`/`gemini-2.0-flash-thinking` accept it; DeepSeek never accepts it (reasoning is implicit on `deepseek-reasoner`).
+- **Pricing**: full pricing entries for all new providers in `ModelPricing`, verified against official sources (April 2026). Includes `grok-4.20` (current xAI flagship), `deepseek-v4-flash`/`v4-pro`, and the unified DeepSeek pricing post-2025-09-29.
+- **Decided OUT OF SCOPE**: Vertex AI for Gemini (OAuth2 GCP — use `Provider.CUSTOM` with a custom bearer if needed); native Gemini proprietary `contents`/`parts` shape; xAI Live Search (`search_parameters`).
+- **Examples**: `examples/providers/grok-native.json`, `azure-grok-native.json`, `deepseek-native.json`, `gemini-native.json`.
+
+### v1.22.1
+- **Pricing refresh**: added GPT-5.5 family (gpt-5.5, gpt-5.5-pro), Claude 4.7 family (opus/sonnet/haiku-4-7), and Claude Haiku 4.6 to `ModelPricing`. Removed the lingering `// TODO: verify pricing` from the Mistral block. (In a follow-up commit on 1.23.0, all prices were re-verified against official sources and corrected where outdated.)
+- **New**: per-instance `modelPricing` on `CustomProviderSpec`. JSON example: `"modelPricing": { "my-private-llm-v2": { "input": 1.50, "output": 5.00 } }`. Lookup order is library static table → custom map → `cost=null` (graceful no-op, no exception). Prefix-matching applies to both layers; longer-prefix wins.
+- **New**: `ModelPricing.PriceEntry` POJO + `ModelPricing.calculate(String, Integer, Integer, Map<String, PriceEntry>)` overload that consults a fallback map when the static table has no match. Existing 3-arg overload is unchanged (binary compat preserved). `UnifiedRequestService` routes pricing through a private `calculatePricing(model, in, out, instance)` helper that auto-injects the spec's fallback map for `Provider.CUSTOM` instances.
+
+### v1.22.0
+- **Deprecation**: the `chatCompletion(...)` / `requestChatCompletion(...)` family on `AgentService` and `UnifiedRequestService` is now `@Deprecated` (8 methods total). Targets the legacy OpenAI `/v1/chat/completions` endpoint only — no Anthropic/Mistral/custom routing, no web search, no code interpreter, no reasoning, no Responses-API features. Replacement: `requestModel(model, userMessage, ModelRequestOptions)` or `requestAgent(agentId, userMessage)`. **Removal scheduled for 2.0.0.** All existing calls compile and run unchanged in 1.22.x.
+- **Docs**: new "Deprecated APIs" section in the README with a Before/After migration snippet.
 
 ### v1.21.1
 - **Fix (custom provider, lenient modes)**: `WARN` and `IGNORE` now actually strip the unsupported feature from the outgoing HTTP body. Pre-1.21.1 they only logged (or silenced) the mismatch but kept building the request with the agent's flags, so providers that did not support `tools`/`response_format`/`reasoning_effort` returned HTTP 400 even though the library promised "graceful fallback". `executeCustomOpenAIChatRequest` now consumes the sanitized `EnumSet<Feature>` returned by `FeatureValidator.validate(...)` and gates the inclusion of `tools` (`FUNCTION_CALLING`), `response_format` (`STRUCTURED_OUTPUT`) and `reasoning_effort` (`REASONING`) on it. The `THROW` path is unchanged (validator still throws before any HTTP call). Non-CUSTOM executors (`executeOpenAIRequest*`, `executeMistralRequest`, `executeClaudeRequest*`) are untouched — they have always-supported feature flows that do not go through `FeatureValidator`. Added 6 integration tests in `CustomProviderIntegrationTest` (`warnStripsFunctionCalling`, `ignoreStripsFunctionCalling`, `warnStripsResponseFormat`, `ignoreStripsResponseFormat`, `warnStripsReasoning`, `allFeaturesAllowedBodyFull`) that capture the on-the-wire body and assert the stripped/preserved keys; the existing `throwLenientMode` continues to assert pre-flight throwing.

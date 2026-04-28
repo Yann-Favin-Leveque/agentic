@@ -1,6 +1,7 @@
 package io.github.yannfavinleveque.agentic.agent.service;
 
 import io.github.yannfavinleveque.agentic.agent.core.Instance;
+import io.github.yannfavinleveque.agentic.agent.core.Provider;
 import io.github.yannfavinleveque.agentic.agent.core.ProviderConfig;
 import io.github.yannfavinleveque.agentic.agent.exception.AgentException;
 import io.github.yannfavinleveque.agentic.agent.exception.ContentFilterException;
@@ -73,7 +74,8 @@ public class ClaudeAdapter {
             List<ClaudeRequest.ClaudeMessage> messages,
             Double temperature, Integer maxTokens,
             Class<?> resultClass) {
-        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, null, null);
+        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, null,
+                null);
     }
 
     /**
@@ -96,7 +98,8 @@ public class ClaudeAdapter {
             Double temperature, Integer maxTokens,
             Class<?> resultClass,
             List<ClaudeRequest.ClaudeTool> tools) {
-        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, tools, null);
+        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, tools,
+                null);
     }
 
     /**
@@ -110,7 +113,8 @@ public class ClaudeAdapter {
      * @param maxTokens       Max tokens (optional, defaults to 4096)
      * @param resultClass     Result class for structured output (optional)
      * @param tools           List of tools available to the model (optional)
-     * @param reasoningEffort Reasoning effort: null/"none" = disabled, "enabled"/"low"/"medium"/"high" = enable thinking
+     * @param reasoningEffort Reasoning effort: null/"none" = disabled, "enabled"/"low"/"medium"/"high"
+     *                        = enable thinking
      * @return CompletableFuture with Claude response
      */
     public java.util.concurrent.CompletableFuture<ClaudeResponse> callClaudeAsync(
@@ -123,12 +127,26 @@ public class ClaudeAdapter {
 
         int resolvedMaxTokens = maxTokens != null ? maxTokens : 4096;
 
+        // Prompt caching: only direct Anthropic supports it. Azure Anthropic ignores cache_control
+        // markers and would not benefit (and might error on some account configs), so we only flag
+        // the system + tools for caching when talking to api.anthropic.com directly.
+        boolean cacheable = instance != null && instance.getProvider() == Provider.ANTHROPIC;
+
         ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
                 .model(model)
                 .maxTokens(resolvedMaxTokens)
-                .system(systemPrompt)
                 .messages(messages)
                 .temperature(temperature);
+
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            if (cacheable) {
+                // Wrap the (presumably long, stable) system prompt as a single text block
+                // marked ephemeral. Anthropic caches everything up to and including this block.
+                requestBuilder.systemBlocks(List.of(ClaudeRequest.ClaudeContentBlock.textCached(systemPrompt)));
+            } else {
+                requestBuilder.system(systemPrompt);
+            }
+        }
 
         // Configure thinking/reasoning if enabled
         // Claude constraints: budget_tokens >= 1024, max_tokens > budget_tokens
@@ -147,10 +165,29 @@ public class ClaudeAdapter {
             logger.debug("Enabled Claude thinking: budget_tokens={}, max_tokens={}", budgetTokens, totalMaxTokens);
         }
 
-        // Add tools if provided
+        // Add tools if provided. For direct Anthropic, mark the last tool with cache_control
+        // so the entire tools array is treated as a single cacheable block (Anthropic caches
+        // everything from the start of the tools list up to and including the marked entry).
         if (tools != null && !tools.isEmpty()) {
-            requestBuilder.tools(tools);
-            logger.debug("Added {} tools to Claude request", tools.size());
+            List<ClaudeRequest.ClaudeTool> toolsToSend = tools;
+            if (cacheable) {
+                int last = tools.size() - 1;
+                ClaudeRequest.ClaudeTool original = tools.get(last);
+                if (original.getCacheControl() == null) {
+                    ClaudeRequest.ClaudeTool flagged = ClaudeRequest.ClaudeTool.builder()
+                            .type(original.getType())
+                            .name(original.getName())
+                            .description(original.getDescription())
+                            .inputSchema(original.getInputSchema())
+                            .maxUses(original.getMaxUses())
+                            .cacheControl(Map.of("type", "ephemeral"))
+                            .build();
+                    toolsToSend = new ArrayList<>(tools);
+                    toolsToSend.set(last, flagged);
+                }
+            }
+            requestBuilder.tools(toolsToSend);
+            logger.debug("Added {} tools to Claude request (cacheable={})", toolsToSend.size(), cacheable);
         }
 
         // Add output format for structured outputs
