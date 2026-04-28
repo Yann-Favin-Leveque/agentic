@@ -1,5 +1,7 @@
 package io.github.yannfavinleveque.agentic.agent.core;
 
+import io.github.yannfavinleveque.agentic.agent.service.GeminiAdapter;
+
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -185,6 +187,14 @@ public final class ProviderConfig {
                 return getMistralPath(endpoint);
             case AZURE_MISTRAL:
                 return getAzureMistralPath(endpoint, model);
+            case GROK:
+                return getGrokPath(endpoint);
+            case AZURE_GROK:
+                return getAzureGrokPath(endpoint, model);
+            case DEEPSEEK:
+                return getDeepSeekPath(endpoint);
+            case GEMINI:
+                return getGeminiPath(endpoint);
             case CUSTOM:
                 // CUSTOM paths are read from CustomProviderSpec by the caller
                 // (UnifiedRequestService). getPath() should not be called for CUSTOM
@@ -415,6 +425,54 @@ public final class ProviderConfig {
         }
     }
 
+    private static String getGrokPath(Endpoint endpoint) {
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return "/v1/chat/completions";
+            case EMBEDDINGS:
+                // xAI did not officially expose embeddings as of 2026-01.
+                throw new UnsupportedOperationException(
+                        "Grok doesn't support: " + endpoint + ". Supported: CHAT_COMPLETIONS.");
+            default:
+                throw new UnsupportedOperationException(
+                        "Grok doesn't support: " + endpoint);
+        }
+    }
+
+    private static String getAzureGrokPath(Endpoint endpoint, String model) {
+        // Azure AI Foundry path, model in body.
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return "/models/chat/completions";
+            default:
+                throw new UnsupportedOperationException(
+                        "Azure Grok doesn't support: " + endpoint);
+        }
+    }
+
+    private static String getDeepSeekPath(Endpoint endpoint) {
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return "/v1/chat/completions";
+            default:
+                throw new UnsupportedOperationException(
+                        "DeepSeek doesn't support: " + endpoint);
+        }
+    }
+
+    private static String getGeminiPath(Endpoint endpoint) {
+        // We standardize on the OpenAI-compat shim, which lives under /v1beta/openai/...
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return GeminiAdapter.CHAT_COMPLETIONS_PATH;
+            case EMBEDDINGS:
+                return GeminiAdapter.EMBEDDINGS_PATH;
+            default:
+                throw new UnsupportedOperationException(
+                        "Gemini doesn't support: " + endpoint);
+        }
+    }
+
     private static String requireModel(String model) {
         if (model == null || model.trim().isEmpty()) {
             throw new IllegalArgumentException("Model is required for Azure OpenAI deployment endpoints");
@@ -456,6 +514,19 @@ public final class ProviderConfig {
                 break;
             case AZURE_MISTRAL:
                 headers.put("api-key", apiKey);
+                break;
+            case GROK:
+                headers.put("Authorization", "Bearer " + apiKey);
+                break;
+            case AZURE_GROK:
+                headers.put("api-key", apiKey);
+                break;
+            case DEEPSEEK:
+                headers.put("Authorization", "Bearer " + apiKey);
+                break;
+            case GEMINI:
+                // The OpenAI-compat shim accepts Bearer auth (despite native API using x-goog-api-key).
+                headers.put("Authorization", "Bearer " + apiKey);
                 break;
             case CUSTOM:
                 throw new UnsupportedOperationException(
@@ -530,6 +601,17 @@ public final class ProviderConfig {
                 }
                 params.put("api-version", apiVersion);
                 break;
+            case GROK:
+            case DEEPSEEK:
+            case GEMINI:
+                // No query params required
+                break;
+            case AZURE_GROK:
+                if (apiVersion == null || apiVersion.trim().isEmpty()) {
+                    throw new IllegalArgumentException("API version is required for Azure Grok");
+                }
+                params.put("api-version", apiVersion);
+                break;
             case CUSTOM:
                 throw new UnsupportedOperationException(
                         "ProviderConfig.getQueryParams should not be called for Provider.CUSTOM. "
@@ -562,6 +644,12 @@ public final class ProviderConfig {
                 return endpoint == Endpoint.CHAT_COMPLETIONS;
             case MISTRAL:
             case AZURE_MISTRAL:
+                return endpoint == Endpoint.CHAT_COMPLETIONS || endpoint == Endpoint.EMBEDDINGS;
+            case GROK:
+            case AZURE_GROK:
+            case DEEPSEEK:
+                return endpoint == Endpoint.CHAT_COMPLETIONS;
+            case GEMINI:
                 return endpoint == Endpoint.CHAT_COMPLETIONS || endpoint == Endpoint.EMBEDDINGS;
             case CUSTOM:
                 // For CUSTOM, "support" is determined by the spec's endpoints map; the caller

@@ -26,8 +26,12 @@ export OPENAI_INSTANCES="$(cat examples/providers/mistral-instance.json | envsub
 |---|---|---|---|---|
 | `mistral-instance.json` | Mistral La Plateforme | `MISTRAL_API_KEY` | natif | Vision via Pixtral, reasoning via Magistral |
 | `azure-mistral-instance.json` | Mistral via Azure AI Foundry | `AZURE_MISTRAL_KEY` | natif | `apiVersion` requise |
-| `custom-grok.json` | xAI Grok | `XAI_API_KEY` | `openai-chat` | OpenAI-compat, vision + function calling |
-| `custom-deepseek.json` | DeepSeek | `DEEPSEEK_API_KEY` | `openai-chat` | `deepseek-reasoner` = équivalent o1 |
+| `grok-native.json` | xAI Grok | `XAI_API_KEY` | natif | `Provider.GROK` ; `reasoning_effort` only on grok-4 / grok-3-mini |
+| `azure-grok-native.json` | Grok via Azure AI Foundry | `AZURE_GROK_KEY` | natif | `Provider.AZURE_GROK` ; `apiVersion` requise |
+| `deepseek-native.json` | DeepSeek | `DEEPSEEK_API_KEY` | natif | `Provider.DEEPSEEK` ; `reasoning_content` prepended as `[REASONING]...[/REASONING]` |
+| `gemini-native.json` | Google Gemini (OpenAI shim) | `GEMINI_API_KEY` | natif | `Provider.GEMINI` ; uses `/v1beta/openai/chat/completions` shim |
+| `custom-grok.json` | xAI Grok (legacy `custom`) | `XAI_API_KEY` | `openai-chat` | Pre-1.23 fallback. Prefer `grok-native.json` |
+| `custom-deepseek.json` | DeepSeek (legacy `custom`) | `DEEPSEEK_API_KEY` | `openai-chat` | Pre-1.23 fallback. Prefer `deepseek-native.json` |
 | `custom-groq.json` | Groq | `GROQ_API_KEY` | `openai-chat` | Inférence très rapide (Llama 70B @ 500+ tok/s) |
 | `custom-ollama-local.json` | Ollama auto-hébergé | n/a | `openai-chat` | Pas d'API key réelle, modèles locaux |
 

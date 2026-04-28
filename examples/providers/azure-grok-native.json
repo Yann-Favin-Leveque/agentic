@@ -1,0 +1,11 @@
+[
+  {
+    "id": "azure-grok-eastus",
+    "url": "https://my-resource.services.ai.azure.com",
+    "key": "${AZURE_GROK_KEY}",
+    "models": "grok-3,grok-3-mini",
+    "provider": "azure-grok",
+    "apiVersion": "2024-05-01-preview",
+    "enabled": true
+  }
+]

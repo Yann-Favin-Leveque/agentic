@@ -195,6 +195,38 @@ public class InstanceConfig {
     }
 
     /**
+     * Check if this is an xAI Grok instance.
+     * @return true if provider is "grok"
+     */
+    public boolean isGrok() {
+        return "grok".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is a Grok via Azure AI Foundry instance.
+     * @return true if provider is "azure-grok"
+     */
+    public boolean isAzureGrok() {
+        return "azure-grok".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is a DeepSeek instance.
+     * @return true if provider is "deepseek"
+     */
+    public boolean isDeepSeek() {
+        return "deepseek".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is a Google Gemini instance (via the OpenAI-compat shim).
+     * @return true if provider is "gemini"
+     */
+    public boolean isGemini() {
+        return "gemini".equalsIgnoreCase(provider);
+    }
+
+    /**
      * Check if this is a fully user-defined custom provider instance.
      * @return true if provider is "custom"
      */
@@ -232,15 +264,19 @@ public class InstanceConfig {
         if (provider == null || provider.trim().isEmpty()) {
             throw new IllegalArgumentException("Instance 'provider' is required for instance: " + id);
         }
-        if (!isOpenAI() && !isAzure() && !isAnthropic() && !isMistral() && !isAzureMistral() && !isCustom()) {
+        if (!isOpenAI() && !isAzure() && !isAnthropic() && !isMistral() && !isAzureMistral()
+                && !isGrok() && !isAzureGrok() && !isDeepSeek() && !isGemini() && !isCustom()) {
             throw new IllegalArgumentException(
-                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', 'anthropic', 'mistral', 'azure-mistral', or 'custom' for instance: " + id + " (got: " + provider + ")");
+                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', 'anthropic', 'mistral', 'azure-mistral', 'grok', 'azure-grok', 'deepseek', 'gemini', or 'custom' for instance: " + id + " (got: " + provider + ")");
         }
         if (isAzure() && (apiVersion == null || apiVersion.trim().isEmpty())) {
             throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure instances: " + id);
         }
         if (isAzureMistral() && (apiVersion == null || apiVersion.trim().isEmpty())) {
             throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure Mistral instances: " + id);
+        }
+        if (isAzureGrok() && (apiVersion == null || apiVersion.trim().isEmpty())) {
+            throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure Grok instances: " + id);
         }
         if (isCustom()) {
             if (custom == null) {

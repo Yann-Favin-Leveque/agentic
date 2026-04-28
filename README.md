@@ -1091,7 +1091,7 @@ unset ENABLED_PROVIDERS
 
 ## Multi-Provider Support
 
-AgentService supports seven built-in providers plus a JSON-driven CUSTOM provider, all with automatic routing:
+AgentService supports eleven built-in providers plus a JSON-driven CUSTOM provider, all with automatic routing:
 
 | Provider | Description | Models |
 |----------|-------------|--------|
@@ -1101,7 +1101,11 @@ AgentService supports seven built-in providers plus a JSON-driven CUSTOM provide
 | `azure-anthropic` | Azure AI (Claude) | claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-5 |
 | `mistral` | Mistral La Plateforme | mistral-large-latest, pixtral-large-latest, codestral-latest, magistral-medium-latest, ministral-* |
 | `azure-mistral` | Mistral via Azure AI Foundry | mistral-large-* (deployed) |
-| `custom` | User-defined provider via JSON spec | Any (Grok, DeepSeek, Together, Groq, Ollama, ...) |
+| `grok` | xAI Grok (api.x.ai) | grok-4, grok-4-fast, grok-3, grok-3-mini, grok-2-vision-1212, grok-code-fast-1 |
+| `azure-grok` | Grok via Azure AI Foundry | grok-3, grok-3-mini (deployed) |
+| `deepseek` | DeepSeek (api.deepseek.com) | deepseek-chat, deepseek-reasoner |
+| `gemini` | Google Gemini (OpenAI-compat shim) | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, gemini-2.0-flash-thinking, text-embedding-004 |
+| `custom` | User-defined provider via JSON spec | Any (Together, Groq, OpenRouter, Ollama, ...) |
 
 The service automatically:
 - Routes requests to instances that have the requested model
@@ -1109,7 +1113,7 @@ The service automatically:
 - Handles rate limiting per instance
 - Retries on transient failures
 
-Routing precedence inside the request executor: **custom > anthropic > mistral > openai**. An instance whose `provider` is `custom` short-circuits everything (no model-name sniffing); for the other built-in providers, the model name (`claude-*`, `mistral-*`, `pixtral-*`, `codestral-*`, `magistral-*`, `ministral-*`) selects the right adapter.
+Routing precedence inside the request executor: **custom > anthropic > mistral > grok > deepseek > gemini > openai**. An instance whose `provider` is `custom` short-circuits everything (no model-name sniffing); for the other built-in providers, the model name (`claude-*`, `mistral-*`, `pixtral-*`, `codestral-*`, `magistral-*`, `ministral-*`, `grok-*`, `deepseek-*`, `gemini-*`) selects the right adapter.
 
 ### Mistral support
 
@@ -1140,6 +1144,85 @@ Notes:
 - The OpenAI-introduced `developer` role is automatically rewritten to `system` for Mistral.
 - `magistral-*` reasoning models receive `prompt_mode: "reasoning"` automatically.
 - Native `web_search` and `code_interpreter` tools are not available — set `webSearch=false` / `codeInterpreter=false` on agents pinned to Mistral instances. Use the `instances` allow-list on the agent (see `AgentDefinition.instances`) to keep tool-heavy agents on OpenAI/Claude only.
+
+### xAI Grok support
+
+Grok exposes an OpenAI-compatible `/v1/chat/completions` endpoint at `api.x.ai`. Use `provider: "grok"` (or `provider: "azure-grok"` for the Azure AI Foundry deployment, which serves at `/models/chat/completions` with an `api-version` query parameter and `api-key` header):
+
+```json
+[
+  {
+    "id": "xai-grok-main",
+    "url": "https://api.x.ai",
+    "key": "${XAI_API_KEY}",
+    "models": "grok-4,grok-4-fast,grok-3,grok-3-mini,grok-2-vision-1212,grok-code-fast-1",
+    "provider": "grok"
+  },
+  {
+    "id": "azure-grok-eastus",
+    "url": "https://my-foundry.services.ai.azure.com",
+    "key": "${AZURE_GROK_KEY}",
+    "models": "grok-3,grok-3-mini",
+    "provider": "azure-grok",
+    "apiVersion": "2024-05-01-preview"
+  }
+]
+```
+
+Notes:
+- `reasoning_effort` is only emitted on reasoning-capable models (`grok-4*`, `grok-3-mini`). On other Grok models the field is silently stripped — xAI returns HTTP 400 if you send it on `grok-3` or `grok-2-*`.
+- xAI's proprietary **Live Search** (`search_parameters`) is not yet exposed — use `Provider.CUSTOM` if you need it today.
+- xAI did not officially expose embeddings as of 2026-01; only `CHAT_COMPLETIONS` is supported.
+- Grok also speaks Anthropic Messages on `/v1/messages`, but we standardize on the OpenAI shape to keep one code path.
+
+### DeepSeek support
+
+DeepSeek exposes an OpenAI-compatible `/v1/chat/completions` endpoint at `api.deepseek.com`. Use `provider: "deepseek"`:
+
+```json
+[
+  {
+    "id": "deepseek-main",
+    "url": "https://api.deepseek.com",
+    "key": "${DEEPSEEK_API_KEY}",
+    "models": "deepseek-chat,deepseek-reasoner",
+    "provider": "deepseek"
+  }
+]
+```
+
+Notes:
+- `deepseek-reasoner` returns a non-standard `reasoning_content` field on the assistant message (visible chain-of-thought). The library extracts it and **prepends it to the parsed text** wrapped in `[REASONING]\n...\n[/REASONING]\n\n` markers, so the chain-of-thought is preserved without losing the final content. Callers who only want the final answer can split on the closing tag.
+- `reasoning_effort` is **not** sent — DeepSeek picks reasoning implicitly when you call `deepseek-reasoner`.
+- DeepSeek's automatic context caching surfaces in `usage.prompt_cache_hit_tokens` (visible in the raw JSON; not yet exposed on `TokenUsage`).
+- Only `CHAT_COMPLETIONS` is supported (no native embeddings endpoint via this adapter).
+
+### Google Gemini support (OpenAI-compat shim)
+
+Gemini is wired through Google's OpenAI-compatibility shim at `generativelanguage.googleapis.com/v1beta/openai/chat/completions`. Use `provider: "gemini"`:
+
+```json
+[
+  {
+    "id": "gemini-main",
+    "url": "https://generativelanguage.googleapis.com",
+    "key": "${GEMINI_API_KEY}",
+    "models": "gemini-2.5-pro,gemini-2.5-flash,gemini-2.0-flash,text-embedding-004",
+    "provider": "gemini"
+  }
+]
+```
+
+Why the shim and not the native Gemini API?
+- The native API uses a proprietary shape (`contents`/`parts`, no system role, OAuth for Vertex), which would require a dedicated message-format converter.
+- The shim accepts plain OpenAI Chat Completions payloads with `Authorization: Bearer <API_KEY>` and is documented as production-ready by Google. This keeps the implementation aligned with Mistral / Grok / DeepSeek paths.
+
+Limitations of the shim (acknowledged trade-offs — pass through `Provider.CUSTOM` for any of these):
+- No access to `thinkingConfig.thinkingBudget` (Gemini 2.5 thinking budget is implicit; only `reasoning_effort` low/medium/high is passed through, mapped server-side).
+- No access to native multimodal types beyond what OpenAI vision allows (no inline audio/video; only `image_url` base64/URL).
+- `safetySettings` cannot be configured via the shim — Google defaults apply.
+- Some Gemini-only features (grounded search via `google_search`) require the native API and are not exposed here.
+- **Vertex AI** (OAuth2-authenticated, regional) is not supported by `Provider.GEMINI`. If you need Vertex, declare it as a `custom` provider with your OAuth bearer token mechanism, or open an issue.
 
 ### Custom Provider
 

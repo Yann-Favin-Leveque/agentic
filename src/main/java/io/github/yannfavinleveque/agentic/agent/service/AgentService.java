@@ -1319,6 +1319,18 @@ public class AgentService {
         if (instanceConfig.isAzureMistral() && allowedProviders.contains("azure-mistral")) {
             return true;
         }
+        if (instanceConfig.isGrok() && allowedProviders.contains("grok")) {
+            return true;
+        }
+        if (instanceConfig.isAzureGrok() && allowedProviders.contains("azure-grok")) {
+            return true;
+        }
+        if (instanceConfig.isDeepSeek() && allowedProviders.contains("deepseek")) {
+            return true;
+        }
+        if (instanceConfig.isGemini() && allowedProviders.contains("gemini")) {
+            return true;
+        }
         if (instanceConfig.isCustom() && allowedProviders.contains("custom")) {
             return true;
         }
@@ -1362,6 +1374,14 @@ public class AgentService {
                 providerType = Provider.AZURE_MISTRAL;
             } else if (ic.isMistral()) {
                 providerType = Provider.MISTRAL;
+            } else if (ic.isAzureGrok()) {
+                providerType = Provider.AZURE_GROK;
+            } else if (ic.isGrok()) {
+                providerType = Provider.GROK;
+            } else if (ic.isDeepSeek()) {
+                providerType = Provider.DEEPSEEK;
+            } else if (ic.isGemini()) {
+                providerType = Provider.GEMINI;
             } else if (ic.isCustom()) {
                 providerType = Provider.CUSTOM;
             } else {
