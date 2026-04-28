@@ -1,0 +1,11 @@
+[
+  {
+    "id": "azure-mistral-eastus",
+    "url": "https://my-resource.services.ai.azure.com",
+    "key": "${AZURE_MISTRAL_KEY}",
+    "models": "Mistral-large-2411,Mistral-Nemo",
+    "provider": "azure-mistral",
+    "apiVersion": "2024-05-01-preview",
+    "enabled": true
+  }
+]

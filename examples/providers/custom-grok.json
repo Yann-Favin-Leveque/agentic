@@ -1,0 +1,32 @@
+[
+  {
+    "id": "xai-grok",
+    "url": "https://api.x.ai",
+    "key": "${XAI_API_KEY}",
+    "models": "grok-4,grok-3,grok-code",
+    "provider": "custom",
+    "enabled": true,
+    "custom": {
+      "apiFormat": "openai-chat",
+      "auth": { "header": "Authorization", "format": "Bearer {key}" },
+      "endpoints": {
+        "chat_completions": "/v1/chat/completions"
+      },
+      "queryParams": {},
+      "extraHeaders": {},
+      "features": {
+        "vision": true,
+        "function_calling": true,
+        "structured_output": true,
+        "web_search": false,
+        "code_interpreter": false,
+        "responses_api": false,
+        "reasoning": false,
+        "streaming": false,
+        "embeddings": false,
+        "image_generation": false
+      },
+      "onUnsupportedFeature": "throw"
+    }
+  }
+]

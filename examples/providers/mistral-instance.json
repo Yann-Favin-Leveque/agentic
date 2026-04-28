@@ -1,0 +1,15 @@
+[
+  {
+    "id": "mistral-main",
+    "url": "https://api.mistral.ai",
+    "key": "${MISTRAL_API_KEY}",
+    "models": "mistral-large-latest,mistral-small-latest,pixtral-large-latest,codestral-latest,magistral-medium-latest,mistral-embed",
+    "provider": "mistral",
+    "enabled": true,
+    "rateLimits": {
+      "mistral-large-latest": 5,
+      "mistral-small-latest": 30,
+      "*": 5
+    }
+  }
+]
