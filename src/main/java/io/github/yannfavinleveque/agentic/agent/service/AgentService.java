@@ -825,7 +825,13 @@ public class AgentService {
      * @param messages    Chat messages
      * @param temperature Temperature (optional)
      * @return Response content
+     *
+     * @deprecated since 1.22.0 — Use {@link #requestModel(String, String, ModelRequestOptions)}
+     *             instead. The chatCompletion family is legacy: OpenAI Chat Completions only,
+     *             no Anthropic/Mistral/custom routing, no web search / code interpreter /
+     *             reasoning / structured output via Responses API. To be removed in 2.0.0.
      */
+    @Deprecated
     public CompletableFuture<String> requestChatCompletion(String model, List<ChatMessage> messages,
             Double temperature) {
         return unifiedRequestService.requestChatCompletion(model, messages, temperature);
@@ -839,7 +845,13 @@ public class AgentService {
      * @param temperature Temperature (optional)
      * @param resultClass Result class for typed response
      * @return Typed result
+     *
+     * @deprecated since 1.22.0 — Use {@link #requestModel(String, String, ModelRequestOptions)}
+     *             instead. The chatCompletion family is legacy: OpenAI Chat Completions only,
+     *             no Anthropic/Mistral/custom routing, no web search / code interpreter /
+     *             reasoning / structured output via Responses API. To be removed in 2.0.0.
      */
+    @Deprecated
     public <T extends AgentResult> CompletableFuture<T> chatCompletion(String model,
             List<ChatMessage> messages,
             Double temperature,
@@ -849,7 +861,13 @@ public class AgentService {
 
     /**
      * Executes a chat completion without structured output.
+     *
+     * @deprecated since 1.22.0 — Use {@link #requestModel(String, String, ModelRequestOptions)}
+     *             instead. The chatCompletion family is legacy: OpenAI Chat Completions only,
+     *             no Anthropic/Mistral/custom routing, no web search / code interpreter /
+     *             reasoning / structured output via Responses API. To be removed in 2.0.0.
      */
+    @Deprecated
     public CompletableFuture<DefaultResult> chatCompletion(String model, List<ChatMessage> messages,
             Double temperature) {
         return unifiedRequestService.chatCompletion(model, messages, temperature);
@@ -863,7 +881,13 @@ public class AgentService {
      * @param temperature     Temperature
      * @param resultClassName Simple class name (e.g., "WeatherResult")
      * @return CompletableFuture with typed result
+     *
+     * @deprecated since 1.22.0 — Use {@link #requestModel(String, String, ModelRequestOptions)}
+     *             instead. The chatCompletion family is legacy: OpenAI Chat Completions only,
+     *             no Anthropic/Mistral/custom routing, no web search / code interpreter /
+     *             reasoning / structured output via Responses API. To be removed in 2.0.0.
      */
+    @Deprecated
     public <T extends AgentResult> CompletableFuture<T> chatCompletion(String model,
             List<ChatMessage> messages,
             Double temperature,

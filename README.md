@@ -71,7 +71,7 @@ Then add to your project's `pom.xml`:
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.19.0</version>
+    <version>1.22.0</version>
 </dependency>
 ```
 
@@ -83,7 +83,7 @@ The library is published on Maven Central. No extra repository configuration nee
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.19.0</version>
+    <version>1.22.0</version>
 </dependency>
 ```
 
@@ -102,7 +102,7 @@ Add the repository to your `pom.xml`:
 <dependency>
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.19.0</version>
+    <version>1.22.0</version>
 </dependency>
 ```
 
@@ -1294,6 +1294,37 @@ In this Ollama example, an agent with `resultClass="MyResult"` triggers a warnin
 | `requestEmbeddings(texts)` | Generate batch embeddings |
 | `requestImage(prompt)` | Generate image (base64) |
 | `requestImageEdit(imageBase64, prompt)` | Edit existing image |
+
+## Deprecated APIs
+
+### `chatCompletion(...)` / `requestChatCompletion(...)` (since 1.22.0)
+
+The `chatCompletion` family on `AgentService` targets the legacy OpenAI
+`/v1/chat/completions` endpoint exclusively. It does not support:
+- Anthropic / Mistral / custom provider routing
+- Web search, code interpreter, reasoning effort
+- The richer Responses API features
+- Function calling beyond the OpenAI tools array
+
+**Use `requestModel(...)` or `requestAgent(...)` instead** — they route per-provider
+to the most modern endpoint available (Responses API for OpenAI/Azure-OpenAI,
+Messages for Anthropic, Chat Completions stateless for Mistral/Grok/DeepSeek/custom),
+and expose the full feature surface of each provider.
+
+`chatCompletion(...)` will be **removed in 2.0.0**. Migrate now:
+
+```java
+// Before
+agentService.chatCompletion("gpt-4o", messages, 0.7, MyResult.class).join();
+
+// After
+ModelRequestOptions opts = ModelRequestOptions.builder()
+    .resultClass(MyResult.class)
+    .temperature(0.7)
+    .history(messages)
+    .build();
+agentService.requestModel("gpt-4o", lastUserMessage, opts).join();
+```
 
 ## License
 
