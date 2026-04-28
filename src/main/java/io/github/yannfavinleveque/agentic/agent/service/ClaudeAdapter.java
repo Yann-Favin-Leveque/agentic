@@ -125,7 +125,7 @@ public class ClaudeAdapter {
             List<ClaudeRequest.ClaudeTool> tools,
             String reasoningEffort) {
 
-        int resolvedMaxTokens = maxTokens != null ? maxTokens : 4096;
+        int resolvedMaxTokens = maxTokens != null ? maxTokens : 32768;
 
         // Prompt caching: both direct Anthropic and Azure Anthropic honor cache_control. Verified by
         // curl on Azure (cache_creation_input_tokens populated on first call, cache_read_input_tokens
@@ -151,12 +151,21 @@ public class ClaudeAdapter {
             }
         }
 
-        // Configure thinking/reasoning if enabled
-        // Claude constraints: budget_tokens >= 1024, max_tokens > budget_tokens
+        // Configure thinking/reasoning if enabled.
+        // Claude constraints: budget_tokens >= 1024, max_tokens > budget_tokens.
+        // We cap the total at 32000: bigger total mostly works against us on cost (more
+        // thinking ≠ better output past a point). budget = 1/4 of total gives ~8K
+        // thinking room + ~24K output, which handles everything we've thrown at the
+        // agent so far including big multi-file deliverables. The HTTP client timeout
+        // (HttpHelper.DEFAULT_POST_TIMEOUT_MS = 5 min) gives us headroom for the actual
+        // thinking-mode wall time.
         if (reasoningEffort != null && !reasoningEffort.isBlank() && !"none".equalsIgnoreCase(reasoningEffort)) {
-            int budgetTokens = Math.max(1024, resolvedMaxTokens);
-            // max_tokens must be strictly greater than budget_tokens
-            int totalMaxTokens = budgetTokens + resolvedMaxTokens;
+            final int THINKING_TOTAL_CAP = 32000;
+            int totalMaxTokens = Math.min(resolvedMaxTokens, THINKING_TOTAL_CAP);
+            int budgetTokens = Math.max(1024, totalMaxTokens / 4);
+            if (budgetTokens >= totalMaxTokens) {
+                budgetTokens = totalMaxTokens - 1024;
+            }
             requestBuilder.maxTokens(totalMaxTokens);
 
             Map<String, Object> thinking = new HashMap<>();

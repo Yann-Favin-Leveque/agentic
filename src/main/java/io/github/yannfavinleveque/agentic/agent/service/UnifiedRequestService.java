@@ -446,7 +446,7 @@ public class UnifiedRequestService {
             requestBody.put("temperature", agent.getTemperature());
         }
 
-        requestBody.put("max_output_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
+        requestBody.put("max_output_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768);
 
         // Reasoning configuration
         addOpenAIReasoningConfig(requestBody, agent.getReasoningEffort());
@@ -517,7 +517,7 @@ public class UnifiedRequestService {
                 agent.getInstructions(),
                 messages,
                 agent.getTemperature(),
-                agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
+                agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768,
                 resultClass,
                 tools,
                 agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
@@ -1028,7 +1028,7 @@ public class UnifiedRequestService {
         if (agent.getTemperature() != null) {
             body.put("temperature", agent.getTemperature());
         }
-        body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
+        body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768);
 
         // FUNCTION_CALLING -> "tools" : only emit when the validator left it in `allowed`.
         if (allowed != null && allowed.contains(Feature.FUNCTION_CALLING)) {
@@ -1073,7 +1073,7 @@ public class UnifiedRequestService {
             headers.put(h.getKey(), h.getValue());
         }
 
-        long timeoutMs = agent.getResponseTimeout() != null ? agent.getResponseTimeout() : 120_000L;
+        long timeoutMs = agent.getResponseTimeout() != null ? agent.getResponseTimeout() : 900_000L;
 
         return httpHelper.postRawCustom(fullUrl, headers, body, timeoutMs)
                 .thenApply(json -> extractChatCompletionsContentParsed(json, instance));
@@ -1452,7 +1452,7 @@ public class UnifiedRequestService {
             requestBody.put("temperature", options.getTemperature());
         }
 
-        Integer maxTokens = (options != null && options.getMaxTokens() != null) ? options.getMaxTokens() : 4096;
+        Integer maxTokens = (options != null && options.getMaxTokens() != null) ? options.getMaxTokens() : 32768;
         requestBody.put("max_output_tokens", maxTokens);
 
         // Reasoning configuration
@@ -1492,7 +1492,7 @@ public class UnifiedRequestService {
 
         String systemPrompt = (options != null) ? options.getInstructions() : null;
         Double temperature = (options != null) ? options.getTemperature() : null;
-        int maxTokens = (options != null && options.getMaxTokens() != null) ? options.getMaxTokens() : 4096;
+        int maxTokens = (options != null && options.getMaxTokens() != null) ? options.getMaxTokens() : 32768;
 
         Class<?> resultClass = (options != null) ? options.getResultClass() : null;
 
@@ -1774,7 +1774,7 @@ public class UnifiedRequestService {
         if (agent.getMaxTokens() != null) {
             requestBody.put("max_output_tokens", agent.getMaxTokens());
         } else {
-            requestBody.put("max_output_tokens", 4096);
+            requestBody.put("max_output_tokens", 32768);
         }
 
         // Reasoning configuration
@@ -2102,7 +2102,7 @@ public class UnifiedRequestService {
                 agent.getInstructions(),
                 messages,
                 agent.getTemperature(),
-                agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
+                agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768,
                 resultClass,
                 tools,
                 agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
@@ -2667,7 +2667,7 @@ public class UnifiedRequestService {
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
 
         ClaudeResponse claudeResponse = claudeAdapter.callClaude(instance, model, systemPrompt,
-                claudeMessages, temperature, 4096, null);
+                claudeMessages, temperature, 32768, null);
 
         String response = claudeResponse.getTextContent();
 
@@ -2702,7 +2702,7 @@ public class UnifiedRequestService {
         String systemPrompt = claudeAdapter.extractSystemPrompt(messages);
 
         ClaudeResponse claudeResponse = claudeAdapter.callClaude(instance, model, systemPrompt,
-                claudeMessages, temperature, 4096, resultClass);
+                claudeMessages, temperature, 32768, resultClass);
 
         String response = claudeResponse.getTextContent();
 

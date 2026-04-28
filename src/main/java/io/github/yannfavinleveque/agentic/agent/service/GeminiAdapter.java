@@ -104,7 +104,7 @@ public final class GeminiAdapter {
             body.put("temperature", agent.getTemperature());
         }
 
-        body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
+        body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768);
 
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);

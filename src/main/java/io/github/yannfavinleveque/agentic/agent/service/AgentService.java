@@ -9,6 +9,7 @@ import io.github.yannfavinleveque.agentic.agent.core.Instance;
 import io.github.yannfavinleveque.agentic.agent.core.Provider;
 import io.github.yannfavinleveque.agentic.agent.exception.MissingPromptVariableException;
 import io.github.yannfavinleveque.agentic.agent.util.PromptTemplate;
+import io.github.yannfavinleveque.agentic.agent.model.AgentCallOverrides;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
 import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
@@ -493,6 +494,83 @@ public class AgentService {
         Agent agent = agentManager.getAgent(agentId);
         Agent resolvedAgent = resolveAgentInstructions(agent, promptVars);
         return unifiedRequestService.requestAgent(resolvedAgent, userMessage, history);
+    }
+
+    /**
+     * Sends a request with manual history AND per-call {@link AgentCallOverrides}.
+     * <p>
+     * Each non-null field of {@code overrides} replaces the corresponding field of the
+     * registered Agent for this call only. Use this for one-shot reasoning bursts, ad-hoc
+     * temperature tweaks, or any other transient parameter change that shouldn't mutate
+     * the registered Agent. Pass {@code null} or {@link AgentCallOverrides#none()} to
+     * behave like the no-override overload.
+     *
+     * @param agentId     Agent ID
+     * @param userMessage Current user message
+     * @param history     Previous conversation messages (can be null or empty)
+     * @param overrides   Per-call overrides (null or {@code none()} = no override)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history,
+            AgentCallOverrides overrides) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent withOverrides = applyOverrides(agent, overrides);
+        return unifiedRequestService.requestAgent(withOverrides, userMessage, history);
+    }
+
+    /**
+     * Sends a request with conversation ID AND per-call {@link AgentCallOverrides}.
+     * Updates the conversation history just like {@link #requestAgent(String, String, String)}.
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, String conversationId,
+            AgentCallOverrides overrides) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent withOverrides = applyOverrides(agent, overrides);
+        if (Boolean.TRUE.equals(withOverrides.getAutonomous())) {
+            return autonomousRunner.run(withOverrides, userMessage, conversationId, null);
+        }
+        List<Message> history = conversationManager.getHistory(conversationId);
+        conversationManager.addUserMessage(conversationId, userMessage);
+        return unifiedRequestService.requestAgent(withOverrides, userMessage, history)
+                .whenComplete((result, error) -> {
+                    if (error == null && result != null) {
+                        String content = result.getContent() != null ? result.getContent() : "";
+                        if (result.hasFunctionCalls()) {
+                            StringBuilder toolSummary = new StringBuilder();
+                            for (FunctionCall call : result.getFunctionCalls()) {
+                                if (toolSummary.length() > 0) toolSummary.append("\n");
+                                toolSummary.append("[Tool call: ").append(call.getName())
+                                        .append("(").append(call.getArguments() != null ? call.getArguments() : "").append(")]");
+                            }
+                            content = content.isEmpty() ? toolSummary.toString() : content + "\n" + toolSummary;
+                        }
+                        conversationManager.addAssistantMessage(conversationId, content);
+                    }
+                });
+    }
+
+    /**
+     * Apply per-call overrides on top of a registered Agent. Returns a clone (Lombok
+     * toBuilder) with only the non-null fields replaced. Returns the input unchanged when
+     * overrides is null or has no fields set.
+     */
+    private static Agent applyOverrides(Agent base, AgentCallOverrides overrides) {
+        if (overrides == null) return base;
+        Agent.AgentBuilder b = base.toBuilder();
+        boolean changed = false;
+        if (overrides.getReasoningEffort() != null) {
+            b.reasoningEffort(overrides.getReasoningEffort());
+            changed = true;
+        }
+        if (overrides.getTemperature() != null) {
+            b.temperature(overrides.getTemperature());
+            changed = true;
+        }
+        if (overrides.getMaxIterations() != null) {
+            b.maxIterations(overrides.getMaxIterations());
+            changed = true;
+        }
+        return changed ? b.build() : base;
     }
 
     /**

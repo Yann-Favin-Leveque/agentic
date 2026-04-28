@@ -78,7 +78,10 @@ public class HttpHelper {
 
     // ==================== HTTP METHODS ====================
 
-    private static final long DEFAULT_POST_TIMEOUT_MS = 120_000L;
+    // 15 min: thinking-mode generations with an 8K budget on Azure can occasionally take
+    // 5+ min (variable; observed up to 5min cliff on big multi-file tasks). 5 min was
+    // tripping otherwise-valid requests; 15 gives a real ceiling without being infinite.
+    private static final long DEFAULT_POST_TIMEOUT_MS = 900_000L;
 
     /**
      * Makes a POST request to an API endpoint.
