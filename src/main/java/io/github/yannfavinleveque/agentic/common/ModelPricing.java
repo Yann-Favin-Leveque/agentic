@@ -93,6 +93,25 @@ public final class ModelPricing {
         put("magistral-medium-latest", 2.00, 5.00);
         put("magistral-small-latest", 0.50, 1.50);
         put("mistral-embed", 0.10, 0.00);
+        // ---- xAI Grok ----
+        // Source: https://docs.x.ai/docs/models#models-pricing  (verify pricing at integration time)
+        // TODO: verify pricing
+        put("grok-4-fast-reasoning", 0.20, 0.50);
+        put("grok-4-fast-non-reasoning", 0.20, 0.50);
+        put("grok-4-fast", 0.20, 0.50);
+        put("grok-4", 3.00, 15.00);
+        put("grok-3-mini", 0.30, 0.50);
+        put("grok-3", 3.00, 15.00);
+        put("grok-2-vision-1212", 2.00, 10.00);
+        put("grok-2-image-1212", 0.07, 0.00);  // image generation, "input" = tokens, "output" = n/a
+        put("grok-2-1212", 2.00, 10.00);
+        put("grok-code-fast-1", 0.20, 1.50);
+        // ---- DeepSeek ----
+        // Source: https://api-docs.deepseek.com/quick_start/pricing  (verify; off-peak discount may apply)
+        // TODO: verify pricing
+        put("deepseek-chat", 0.27, 1.10);
+        put("deepseek-reasoner", 0.55, 2.19);
+        put("deepseek-coder", 0.27, 1.10);
         // ---- Embeddings ----
         put("text-embedding-3-small", 0.02, 0.00);
         put("text-embedding-3-large", 0.13, 0.00);
