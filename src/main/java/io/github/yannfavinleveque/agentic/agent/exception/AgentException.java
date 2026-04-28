@@ -51,6 +51,7 @@ public class AgentException extends RuntimeException {
         // Provider errors
         PROVIDER_ERROR("Provider API error"),
         CLAUDE_API_ERROR("Claude API error"),
+        UNSUPPORTED_FEATURE("Custom provider does not support a requested feature"),
 
         // File/Vector store errors
         FILE_UPLOAD_FAILED("File upload failed"),
