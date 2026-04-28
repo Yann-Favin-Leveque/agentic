@@ -1211,11 +1211,11 @@ When you need a provider that the library does not natively support (Grok / xAI,
 
 | Mode | Behavior |
 |------|----------|
-| `throw` (default) | If an agent declares a feature (e.g. `webSearch=true`) the provider has not flagged supported, the library throws `UnsupportedFeatureException` (a subclass of `AgentException` with code `UNSUPPORTED_FEATURE`). The exception lists the requested feature and the set of supported ones. |
-| `warn` | Logs a SLF4J warning naming the instance, the unsupported feature, and the supported set, then proceeds. The library does NOT promise to strip the feature from the wire body — see the v1.22 TODO in `executeCustomRequest`. Today the request is still built with the agent's flags, so the provider may 4xx on the unknown tool/parameter. Use this mode when you want a soft failure surfaced in logs but the same wire request as `throw`. |
-| `ignore` | Same wire behavior as `warn`, but no log line. Use sparingly — debugging "why is my Grok call 400-ing?" is harder when the warning is gone. |
+| `throw` (default) | If an agent declares a feature (e.g. `webSearch=true`) the provider has not flagged supported, the library throws `UnsupportedFeatureException` (a subclass of `AgentException` with code `UNSUPPORTED_FEATURE`) **before any HTTP call is made**. The exception lists the requested feature and the set of supported ones. |
+| `warn` | Logs a SLF4J warning naming the instance, the unsupported feature, and the supported set, **strips the feature from the outgoing HTTP body**, then sends the request. The provider sees a clean request without the unsupported field, so it does not 4xx on it. Today the three features that are actually stripped at body-build time are `function_calling` (omits the `tools` array), `structured_output` (omits `response_format`) and `reasoning` (omits `reasoning_effort`); other capabilities (`web_search`, `code_interpreter`, `responses_api`, `streaming`, `embeddings`, `image_generation`) are not currently injected into the `openai-chat` body, so there is nothing to strip. |
+| `ignore` | Same wire behavior as `warn` (feature stripped from the body, request sent), but no log line. Use sparingly — debugging "why does my Grok response not include a function call?" is harder when the warning is gone. |
 
-Use `throw` in dev and CI; switch to `warn` in production behind a feature flag if you need to ship before the v1.22 strip-on-warn pass.
+Use `throw` in dev and CI; switch to `warn` in production when you want graceful degradation for providers whose feature matrix is heterogeneous.
 
 #### Example: Grok via xAI (`openai-chat` direct)
 
@@ -1305,6 +1305,9 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 
 ## Changelog
+
+### v1.21.1
+- **Fix (custom provider, lenient modes)**: `WARN` and `IGNORE` now actually strip the unsupported feature from the outgoing HTTP body. Pre-1.21.1 they only logged (or silenced) the mismatch but kept building the request with the agent's flags, so providers that did not support `tools`/`response_format`/`reasoning_effort` returned HTTP 400 even though the library promised "graceful fallback". `executeCustomOpenAIChatRequest` now consumes the sanitized `EnumSet<Feature>` returned by `FeatureValidator.validate(...)` and gates the inclusion of `tools` (`FUNCTION_CALLING`), `response_format` (`STRUCTURED_OUTPUT`) and `reasoning_effort` (`REASONING`) on it. The `THROW` path is unchanged (validator still throws before any HTTP call). Non-CUSTOM executors (`executeOpenAIRequest*`, `executeMistralRequest`, `executeClaudeRequest*`) are untouched — they have always-supported feature flows that do not go through `FeatureValidator`. Added 6 integration tests in `CustomProviderIntegrationTest` (`warnStripsFunctionCalling`, `ignoreStripsFunctionCalling`, `warnStripsResponseFormat`, `ignoreStripsResponseFormat`, `warnStripsReasoning`, `allFeaturesAllowedBodyFull`) that capture the on-the-wire body and assert the stripped/preserved keys; the existing `throwLenientMode` continues to assert pre-flight throwing.
 
 ### v1.21.0
 - **New providers**: `mistral` (Mistral La Plateforme, OpenAI-compat chat/completions on `api.mistral.ai`) and `azure-mistral` (Mistral via Azure AI Foundry, served under `/models/chat/completions` with an `api-version` query param). Routing is automatic — `mistral-*`, `pixtral-*`, `codestral-*`, `magistral-*`, `ministral-*`, `open-mistral-*`, `open-mixtral-*` model names always go through the `MistralAdapter` chat/completions path. The `developer` role is rewritten to `system`; `magistral-*` reasoning models receive `prompt_mode: "reasoning"` automatically.
