@@ -31,17 +31,17 @@ class ModelPricingTest {
     void calculate_gpt55_nonNull() {
         TokenUsage usage = ModelPricing.calculate("gpt-5.5", 1000, 500);
         assertNotNull(usage.getEstimatedCostUsd());
-        // 2.00 * 1000/1e6 + 12.00 * 500/1e6 = 0.002 + 0.006 = 0.008
-        assertEquals(0.008, usage.getEstimatedCostUsd(), EPS);
+        // 5.00 * 1000/1e6 + 30.00 * 500/1e6 = 0.005 + 0.015 = 0.020
+        assertEquals(0.020, usage.getEstimatedCostUsd(), EPS);
     }
 
     @Test
-    @DisplayName("calculate('gpt-5.5-mini', 1000, 500) returns non-null cost")
-    void calculate_gpt55_mini_nonNull() {
-        TokenUsage usage = ModelPricing.calculate("gpt-5.5-mini", 1000, 500);
+    @DisplayName("calculate('gpt-5.5-pro', 1000, 500) returns non-null cost")
+    void calculate_gpt55_pro_nonNull() {
+        TokenUsage usage = ModelPricing.calculate("gpt-5.5-pro", 1000, 500);
         assertNotNull(usage.getEstimatedCostUsd());
-        // 0.50 * 1000/1e6 + 3.00 * 500/1e6 = 0.0005 + 0.0015 = 0.002
-        assertEquals(0.002, usage.getEstimatedCostUsd(), EPS);
+        // 30.00 * 1000/1e6 + 180.00 * 500/1e6 = 0.030 + 0.090 = 0.120
+        assertEquals(0.120, usage.getEstimatedCostUsd(), EPS);
     }
 
     @Test
@@ -138,10 +138,10 @@ class ModelPricingTest {
         fallback.put("gpt-5.5", new ModelPricing.PriceEntry(99.0, 99.0));
         TokenUsage usage = ModelPricing.calculate("gpt-5.5", 1000, 500, fallback);
         assertNotNull(usage.getEstimatedCostUsd());
-        // Must come from the static table (2.00/12.00), not the fallback.
-        assertEquals(0.008, usage.getEstimatedCostUsd(), EPS);
+        // Must come from the static table (5.00/30.00), not the fallback.
+        assertEquals(0.020, usage.getEstimatedCostUsd(), EPS);
         // Sanity: must NOT match the bogus fallback price (which would be ~0.0495).
-        assertTrue(usage.getEstimatedCostUsd() < 0.01);
+        assertTrue(usage.getEstimatedCostUsd() < 0.025);
     }
 
     // ---------------- PriceEntry POJO ----------------

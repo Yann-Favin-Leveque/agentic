@@ -25,11 +25,10 @@ public final class ModelPricing {
         // Entries are sorted by key length descending so longer prefixes match first.
         // Each value is {inputPricePerMTok, outputPricePerMTok}.
         // ---- OpenAI GPT-5.5 family ----
-        // Source: OpenAI pricing page  (verify pricing at integration time)
-        put("gpt-5.5-mini", 0.50, 3.00);
-        put("gpt-5.5-nano", 0.10, 0.60);
-        put("gpt-5.5-pro", 17.50, 140.00);
-        put("gpt-5.5", 2.00, 12.00);
+        // Source: https://developers.openai.com/api/docs/pricing (verified 2026-04)
+        // Note: As of 2026-04 only gpt-5.5 and gpt-5.5-pro variants exist; no mini/nano.
+        put("gpt-5.5-pro", 30.00, 180.00);
+        put("gpt-5.5", 5.00, 30.00);
         // ---- OpenAI GPT-5.4 family ----
         put("gpt-5.4-mini", 0.75, 4.50);
         put("gpt-5.4-nano", 0.15, 0.90);
@@ -86,11 +85,11 @@ public final class ModelPricing {
         put("claude-3-5-haiku", 1.00, 5.00);
         put("claude-3-haiku", 0.25, 1.25);
         // ---- Mistral AI ----
-        // Source: https://mistral.ai/products/la-plateforme#pricing (verifier au moment de l'integration)
+        // Source: https://mistral.ai/pricing (verified 2026-04)
         put("mistral-large-latest", 2.00, 6.00);
         put("mistral-large", 2.00, 6.00);
-        put("mistral-medium-latest", 2.70, 8.10);
-        put("mistral-medium", 2.70, 8.10);
+        put("mistral-medium-latest", 0.40, 2.00);
+        put("mistral-medium", 0.40, 2.00);
         put("mistral-small-latest", 0.20, 0.60);
         put("mistral-small", 0.20, 0.60);
         put("ministral-8b-latest", 0.10, 0.10);
@@ -104,8 +103,10 @@ public final class ModelPricing {
         put("magistral-small-latest", 0.50, 1.50);
         put("mistral-embed", 0.10, 0.00);
         // ---- xAI Grok ----
-        // Source: https://docs.x.ai/docs/models#models-pricing  (verify pricing at integration time)
-        // TODO: verify pricing
+        // Source: https://docs.x.ai/developers/models (verified 2026-04)
+        // grok-4.20 is the current flagship (released 2026-03-31).
+        put("grok-4.20", 2.00, 6.00);
+        put("grok-4.1-fast", 0.20, 0.50);
         put("grok-4-fast-reasoning", 0.20, 0.50);
         put("grok-4-fast-non-reasoning", 0.20, 0.50);
         put("grok-4-fast", 0.20, 0.50);
@@ -117,15 +118,18 @@ public final class ModelPricing {
         put("grok-2-1212", 2.00, 10.00);
         put("grok-code-fast-1", 0.20, 1.50);
         // ---- DeepSeek ----
-        // Source: https://api-docs.deepseek.com/quick_start/pricing  (verify; off-peak discount may apply)
-        // TODO: verify pricing
-        put("deepseek-chat", 0.27, 1.10);
-        put("deepseek-reasoner", 0.55, 2.19);
-        put("deepseek-coder", 0.27, 1.10);
+        // Source: https://api-docs.deepseek.com/quick_start/pricing (verified 2026-04, cache miss prices)
+        // Note: As of 2025-09-29 deepseek-chat and deepseek-reasoner have unified pricing.
+        // Cache hits are billed at $0.028/M input (10x cheaper). The newer deepseek-v4-flash
+        // and deepseek-v4-pro are also available; legacy aliases scheduled for deprecation 2026-07-24.
+        put("deepseek-chat", 0.28, 0.42);
+        put("deepseek-reasoner", 0.28, 0.42);
+        put("deepseek-coder", 0.28, 0.42);
+        put("deepseek-v4-flash", 0.14, 0.28);
+        put("deepseek-v4-pro", 1.74, 3.48);
         // ---- Google Gemini ----
-        // Source: https://ai.google.dev/gemini-api/docs/pricing  (verify; tiered by context length)
+        // Source: https://ai.google.dev/gemini-api/docs/pricing (verified 2026-04)
         // For >200K context, prices double approximately. We list flat pricing for the standard tier.
-        // TODO: verify pricing
         put("gemini-2.5-flash-lite", 0.10, 0.40);
         put("gemini-2.5-flash", 0.30, 2.50);
         put("gemini-2.5-pro", 1.25, 10.00);
