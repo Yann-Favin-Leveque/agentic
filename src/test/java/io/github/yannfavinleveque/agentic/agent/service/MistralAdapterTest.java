@@ -14,13 +14,12 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for {@link MistralAdapter} static helpers.
- * Covers model detection (prefix-based, case-insensitive), reasoning detection
- * (Magistral family), role sanitization, and request body construction.
+ * Tests for {@link MistralAdapter} static helpers. Covers model detection (prefix-based,
+ * case-insensitive), reasoning detection (Magistral family), role sanitization, and request body
+ * construction.
  */
 class MistralAdapterTest {
 
@@ -94,6 +93,7 @@ class MistralAdapterTest {
             assertTrue(MistralAdapter.isMistralModel("MISTRAL-LARGE-LATEST"));
             assertTrue(MistralAdapter.isMistralModel("Pixtral-12B"));
         }
+
     }
 
     @Nested
@@ -129,6 +129,7 @@ class MistralAdapterTest {
         void rejectsNull() {
             assertFalse(MistralAdapter.isReasoningModel(null));
         }
+
     }
 
     @Nested
@@ -164,6 +165,7 @@ class MistralAdapterTest {
         void mixedCaseDeveloper() {
             assertEquals("system", MistralAdapter.sanitizeRole("Developer"));
         }
+
     }
 
     @Nested
@@ -271,7 +273,7 @@ class MistralAdapterTest {
         }
 
         @Test
-        @DisplayName("null maxTokens -> defaults to 4096")
+        @DisplayName("null maxTokens -> defaults to 32768")
         void defaultMaxTokens() {
             Agent agent = Agent.builder()
                     .model("mistral-large-latest")
@@ -281,7 +283,7 @@ class MistralAdapterTest {
             Map<String, Object> body = MistralAdapter.buildRequestBody(
                     agent, singleUserMessage(), null, null);
 
-            assertEquals(4096, body.get("max_tokens"));
+            assertEquals(32768, body.get("max_tokens"));
         }
 
         @Test
@@ -298,5 +300,7 @@ class MistralAdapterTest {
 
             assertFalse(body.containsKey("temperature"));
         }
+
     }
+
 }

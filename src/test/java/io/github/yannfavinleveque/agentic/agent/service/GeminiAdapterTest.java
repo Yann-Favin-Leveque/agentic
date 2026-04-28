@@ -17,10 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for {@link GeminiAdapter} static helpers.
- * Covers Gemini model detection (prefix-based, case-insensitive), reasoning
- * detection (Gemini 2.5 + 2.0-flash-thinking), exposed constants, and request
- * body construction (with/without reasoning_effort, tools, response_format).
+ * Tests for {@link GeminiAdapter} static helpers. Covers Gemini model detection (prefix-based,
+ * case-insensitive), reasoning detection (Gemini 2.5 + 2.0-flash-thinking), exposed constants, and
+ * request body construction (with/without reasoning_effort, tools, response_format).
  */
 class GeminiAdapterTest {
 
@@ -94,6 +93,7 @@ class GeminiAdapterTest {
             assertTrue(GeminiAdapter.isGeminiModel("GEMINI-2.5-PRO"));
             assertTrue(GeminiAdapter.isGeminiModel("Gemini-1.5-Flash"));
         }
+
     }
 
     @Nested
@@ -141,6 +141,7 @@ class GeminiAdapterTest {
         void rejectsNull() {
             assertFalse(GeminiAdapter.isReasoningModel(null));
         }
+
     }
 
     @Nested
@@ -164,6 +165,7 @@ class GeminiAdapterTest {
         void embeddingsPath() {
             assertEquals("/v1beta/openai/embeddings", GeminiAdapter.EMBEDDINGS_PATH);
         }
+
     }
 
     @Nested
@@ -197,7 +199,8 @@ class GeminiAdapterTest {
             assertEquals(1024, body.get("max_tokens"));
             assertFalse(body.containsKey("tools"), "tools should not be present");
             assertFalse(body.containsKey("response_format"), "response_format should not be present");
-            assertFalse(body.containsKey("reasoning_effort"), "reasoning_effort should not be present without reasoning model");
+            assertFalse(body.containsKey("reasoning_effort"),
+                    "reasoning_effort should not be present without reasoning model");
         }
 
         @Test
@@ -233,7 +236,7 @@ class GeminiAdapterTest {
         }
 
         @Test
-        @DisplayName("null maxTokens -> defaults to 4096")
+        @DisplayName("null maxTokens -> defaults to 32768")
         void defaultMaxTokens() {
             Agent agent = Agent.builder()
                     .model("gemini-1.5-pro")
@@ -243,7 +246,7 @@ class GeminiAdapterTest {
             Map<String, Object> body = GeminiAdapter.buildRequestBody(
                     agent, singleUserMessage(), null, null);
 
-            assertEquals(4096, body.get("max_tokens"));
+            assertEquals(32768, body.get("max_tokens"));
         }
 
         @Test
@@ -330,5 +333,7 @@ class GeminiAdapterTest {
 
             assertFalse(body.containsKey("reasoning_effort"));
         }
+
     }
+
 }

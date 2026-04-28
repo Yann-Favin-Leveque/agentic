@@ -45,7 +45,7 @@ public class ClaudeAdapter {
      * @param systemPrompt System prompt (optional)
      * @param messages     Conversation messages
      * @param temperature  Temperature (optional)
-     * @param maxTokens    Max tokens (optional, defaults to 4096)
+     * @param maxTokens    Max tokens (optional, defaults to 32768)
      * @param resultClass  Result class for structured output (optional)
      * @return Claude response
      */
@@ -65,7 +65,7 @@ public class ClaudeAdapter {
      * @param systemPrompt System prompt (optional)
      * @param messages     Conversation messages
      * @param temperature  Temperature (optional)
-     * @param maxTokens    Max tokens (optional, defaults to 4096)
+     * @param maxTokens    Max tokens (optional, defaults to 32768)
      * @param resultClass  Result class for structured output (optional)
      * @return CompletableFuture with Claude response
      */
@@ -87,7 +87,7 @@ public class ClaudeAdapter {
      * @param systemPrompt System prompt (optional)
      * @param messages     Conversation messages
      * @param temperature  Temperature (optional)
-     * @param maxTokens    Max tokens (optional, defaults to 4096)
+     * @param maxTokens    Max tokens (optional, defaults to 32768)
      * @param resultClass  Result class for structured output (optional)
      * @param tools        List of tools available to the model (optional)
      * @return CompletableFuture with Claude response
@@ -110,7 +110,7 @@ public class ClaudeAdapter {
      * @param systemPrompt    System prompt (optional)
      * @param messages        Conversation messages
      * @param temperature     Temperature (optional)
-     * @param maxTokens       Max tokens (optional, defaults to 4096)
+     * @param maxTokens       Max tokens (optional, defaults to 32768)
      * @param resultClass     Result class for structured output (optional)
      * @param tools           List of tools available to the model (optional)
      * @param reasoningEffort Reasoning effort: null/"none" = disabled, "enabled"/"low"/"medium"/"high"

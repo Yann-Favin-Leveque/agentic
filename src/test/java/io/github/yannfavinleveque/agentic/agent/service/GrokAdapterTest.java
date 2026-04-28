@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for {@link GrokAdapter} static helpers.
- * Covers Grok model detection (prefix-based, case-insensitive), reasoning detection
- * (grok-3-mini and grok-4* families), and request body construction.
+ * Tests for {@link GrokAdapter} static helpers. Covers Grok model detection (prefix-based,
+ * case-insensitive), reasoning detection (grok-3-mini and grok-4* families), and request body
+ * construction.
  */
 class GrokAdapterTest {
 
@@ -86,6 +86,7 @@ class GrokAdapterTest {
             assertTrue(GrokAdapter.isGrokModel("GROK-4"));
             assertTrue(GrokAdapter.isGrokModel("Grok-3-Mini"));
         }
+
     }
 
     @Nested
@@ -139,6 +140,7 @@ class GrokAdapterTest {
         void rejectsNull() {
             assertFalse(GrokAdapter.isReasoningModel(null));
         }
+
     }
 
     @Nested
@@ -172,7 +174,8 @@ class GrokAdapterTest {
             assertEquals(1024, body.get("max_tokens"));
             assertFalse(body.containsKey("tools"), "tools should not be present");
             assertFalse(body.containsKey("response_format"), "response_format should not be present");
-            assertFalse(body.containsKey("reasoning_effort"), "reasoning_effort should not be present for non-reasoning model");
+            assertFalse(body.containsKey("reasoning_effort"),
+                    "reasoning_effort should not be present for non-reasoning model");
         }
 
         @Test
@@ -266,7 +269,7 @@ class GrokAdapterTest {
         }
 
         @Test
-        @DisplayName("null maxTokens -> defaults to 4096")
+        @DisplayName("null maxTokens -> defaults to 32768")
         void defaultMaxTokens() {
             Agent agent = Agent.builder()
                     .model("grok-3")
@@ -276,7 +279,7 @@ class GrokAdapterTest {
             Map<String, Object> body = GrokAdapter.buildRequestBody(
                     agent, singleUserMessage(), null, null);
 
-            assertEquals(4096, body.get("max_tokens"));
+            assertEquals(32768, body.get("max_tokens"));
         }
 
         @Test
@@ -293,5 +296,7 @@ class GrokAdapterTest {
 
             assertFalse(body.containsKey("temperature"));
         }
+
     }
+
 }
