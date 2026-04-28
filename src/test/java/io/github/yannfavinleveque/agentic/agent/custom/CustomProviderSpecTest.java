@@ -1,5 +1,7 @@
 package io.github.yannfavinleveque.agentic.agent.custom;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yannfavinleveque.agentic.common.ModelPricing;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +11,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -190,5 +193,78 @@ class CustomProviderSpecTest {
         CustomProviderSpec spec = validSpec();
         assertEquals("/v1/chat/completions", spec.getEndpointPath("chat_completions"));
         assertEquals(null, spec.getEndpointPath("unknown_endpoint"));
+    }
+
+    // ---------------- modelPricing ----------------
+
+    @Test
+    @DisplayName("modelPricing builder accepts a non-empty map")
+    void modelPricing_nonEmpty_returnsPopulatedMap() {
+        Map<String, ModelPricing.PriceEntry> pricing = new HashMap<>();
+        pricing.put("my-private-llm", new ModelPricing.PriceEntry(1.0, 5.0));
+        pricing.put("my-private-llm-mini", new ModelPricing.PriceEntry(0.2, 0.8));
+
+        CustomProviderSpec spec = CustomProviderSpec.builder()
+                .modelPricing(pricing)
+                .build();
+
+        assertTrue(spec.getModelPricing().size() > 0);
+        assertEquals(2, spec.getModelPricing().size());
+    }
+
+    @Test
+    @DisplayName("default modelPricing is empty map (not null) when not declared")
+    void modelPricing_default_emptyMapNotNull() {
+        CustomProviderSpec spec = CustomProviderSpec.builder().build();
+        assertNotNull(spec.getModelPricing());
+        assertTrue(spec.getModelPricing().isEmpty());
+    }
+
+    @Test
+    @DisplayName("getModelPricingView returns unmodifiable map")
+    void getModelPricingView_isUnmodifiable() {
+        Map<String, ModelPricing.PriceEntry> pricing = new HashMap<>();
+        pricing.put("my-llm", new ModelPricing.PriceEntry(1.0, 5.0));
+
+        CustomProviderSpec spec = CustomProviderSpec.builder()
+                .modelPricing(pricing)
+                .build();
+
+        Map<String, ModelPricing.PriceEntry> view = spec.getModelPricingView();
+        assertNotNull(view);
+        assertEquals(1, view.size());
+        assertThrows(UnsupportedOperationException.class,
+                () -> view.put("evil", new ModelPricing.PriceEntry(99, 99)));
+    }
+
+    @Test
+    @DisplayName("modelPricing deserializes from JSON")
+    void modelPricing_jsonRoundTrip() throws Exception {
+        String json = "{"
+                + "\"apiFormat\":\"openai-chat\","
+                + "\"modelPricing\":{"
+                + "  \"my-private-llm\": { \"input\": 1.5, \"output\": 5.0 },"
+                + "  \"my-private-llm-mini\": { \"input\": 0.2, \"output\": 0.8 }"
+                + "}}";
+        ObjectMapper mapper = new ObjectMapper();
+        CustomProviderSpec spec = mapper.readValue(json, CustomProviderSpec.class);
+
+        assertNotNull(spec.getModelPricing());
+        assertEquals(2, spec.getModelPricing().size());
+        ModelPricing.PriceEntry pe = spec.getModelPricing().get("my-private-llm");
+        assertNotNull(pe);
+        assertEquals(1.5, pe.getInput(), 1e-9);
+        assertEquals(5.0, pe.getOutput(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("spec without modelPricing JSON deserializes to empty map")
+    void modelPricing_missingInJson_emptyMap() throws Exception {
+        String json = "{\"apiFormat\":\"openai-chat\"}";
+        ObjectMapper mapper = new ObjectMapper();
+        CustomProviderSpec spec = mapper.readValue(json, CustomProviderSpec.class);
+
+        assertNotNull(spec.getModelPricing());
+        assertTrue(spec.getModelPricing().isEmpty());
     }
 }

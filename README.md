@@ -1272,6 +1272,27 @@ Use `throw` in dev and CI; switch to `warn` in production when you want graceful
 
 In this Ollama example, an agent with `resultClass="MyResult"` triggers a warning at request time (`structured_output=false`) instead of throwing, so a single agent definition can be reused across providers of varying capability.
 
+#### Optional `modelPricing` (since 1.22.1)
+
+You can declare per-model pricing for cost tracking. Without it, `TokenUsage.estimatedCostUsd`
+stays `null` for unknown models — no error, the request still succeeds, you just don't get cost.
+
+```json
+"custom": {
+  "apiFormat": "openai-chat",
+  "auth": { "header": "Authorization", "format": "Bearer {key}" },
+  "endpoints": { "chat_completions": "/v1/chat/completions" },
+  "modelPricing": {
+    "my-private-llm-v2":      { "input": 1.50, "output": 5.00 },
+    "my-private-llm-v2-mini": { "input": 0.20, "output": 0.80 }
+  }
+}
+```
+
+Pricing is in USD per 1M tokens. Lookup tries the library's static table first
+(OpenAI / Anthropic / Mistral / Grok / DeepSeek / Gemini), then your `modelPricing`
+(longest-prefix match), then gives up gracefully (`estimatedCostUsd=null`).
+
 ## API Reference
 
 ### AgentService Methods

@@ -476,7 +476,7 @@ public class UnifiedRequestService {
                 ProviderConfig.Endpoint.RESPONSES,
                 agent.getModel(),
                 requestBody,
-                agent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
+                agent.getResponseTimeout()).thenApply(json -> extractResponsesContentParsed(json, instance));
     }
 
     private CompletableFuture<ParsedResponse> executeClaudeRequestWithImages(Agent agent, List<Message> messagesWithUser, Instance instance) {
@@ -510,7 +510,7 @@ public class UnifiedRequestService {
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
                 resultClass,
                 tools,
-                agent.getReasoningEffort()).thenApply(this::parseClaudeResponse);
+                agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
     }
 
     // ==================== MISTRAL CHAT COMPLETIONS ====================
@@ -560,7 +560,7 @@ public class UnifiedRequestService {
                 agent.getModel(),
                 body,
                 agent.getResponseTimeout())
-                .thenApply(this::extractChatCompletionsContentParsed);
+                .thenApply(json -> extractChatCompletionsContentParsed(json, instance));
     }
 
     /**
@@ -717,7 +717,22 @@ public class UnifiedRequestService {
      * {@link AgentException.ErrorCode#MAX_TOKENS_EXCEEDED} for parity with Claude/OpenAI Responses.</p>
      */
     @SuppressWarnings("unchecked")
-    private ParsedResponse extractChatCompletionsContentParsed(String jsonResponse) {
+    /**
+     * Computes pricing for a model on a given instance, consulting
+     * {@link CustomProviderSpec#getModelPricing()} as a fallback when the
+     * instance is a {@link Provider#CUSTOM} one. Built-in providers fall back
+     * to the static {@link ModelPricing} table only.
+     */
+    private TokenUsage calculatePricing(String model, Integer in, Integer out, Instance instance) {
+        Map<String, ModelPricing.PriceEntry> fallback = null;
+        if (instance != null && instance.getProvider() == Provider.CUSTOM
+                && instance.getCustomSpec() != null) {
+            fallback = instance.getCustomSpec().getModelPricing();
+        }
+        return ModelPricing.calculate(model, in, out, fallback);
+    }
+
+    private ParsedResponse extractChatCompletionsContentParsed(String jsonResponse, Instance instance) {
         try {
             Map<String, Object> response = objectMapper.readValue(jsonResponse,
                     new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
@@ -790,7 +805,7 @@ public class UnifiedRequestService {
                 Integer completionTokens = usageMap.get("completion_tokens") instanceof Number
                         ? ((Number) usageMap.get("completion_tokens")).intValue() : null;
                 String model = (String) response.get("model");
-                tokenUsage = ModelPricing.calculate(model, promptTokens, completionTokens);
+                tokenUsage = calculatePricing(model, promptTokens, completionTokens, instance);
             }
 
             if (!functionCalls.isEmpty()) {
@@ -954,7 +969,7 @@ public class UnifiedRequestService {
         long timeoutMs = agent.getResponseTimeout() != null ? agent.getResponseTimeout() : 120_000L;
 
         return httpHelper.postRawCustom(fullUrl, headers, body, timeoutMs)
-                .thenApply(this::extractChatCompletionsContentParsed);
+                .thenApply(json -> extractChatCompletionsContentParsed(json, instance));
     }
 
     /** Returns the EnumSet of {@link Feature}s the agent's configuration requires. */
@@ -1007,7 +1022,7 @@ public class UnifiedRequestService {
      * Parses a Claude response into a ParsedResponse with text and function calls.
      * Detects max_tokens stop reason and throws MAX_TOKENS_EXCEEDED before deserialization.
      */
-    private ParsedResponse parseClaudeResponse(ClaudeResponse response) {
+    private ParsedResponse parseClaudeResponse(ClaudeResponse response, Instance instance) {
         if (response == null || response.getContent() == null) {
             return ParsedResponse.ofText("");
         }
@@ -1055,10 +1070,11 @@ public class UnifiedRequestService {
         // Extract token usage and estimated cost
         TokenUsage tokenUsage = null;
         if (response.getUsage() != null) {
-            tokenUsage = ModelPricing.calculate(
+            tokenUsage = calculatePricing(
                     response.getModel(),
                     response.getUsage().getInputTokens(),
-                    response.getUsage().getOutputTokens());
+                    response.getUsage().getOutputTokens(),
+                    instance);
         }
 
         if (!functionCalls.isEmpty()) {
@@ -1344,7 +1360,7 @@ public class UnifiedRequestService {
                 ProviderConfig.Endpoint.RESPONSES,
                 tempAgent.getModel(),
                 requestBody,
-                tempAgent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
+                tempAgent.getResponseTimeout()).thenApply(json -> extractResponsesContentParsed(json, instance));
     }
 
     private CompletableFuture<ParsedResponse> executeClaudeRequestModelInternal(
@@ -1372,7 +1388,7 @@ public class UnifiedRequestService {
                 maxTokens,
                 resultClass,
                 null,
-                options != null ? options.getReasoningEffort() : null).thenApply(this::parseClaudeResponse);
+                options != null ? options.getReasoningEffort() : null).thenApply(resp -> parseClaudeResponse(resp, instance));
     }
 
     @SuppressWarnings("unchecked")
@@ -1653,7 +1669,7 @@ public class UnifiedRequestService {
                 ProviderConfig.Endpoint.RESPONSES,
                 agent.getModel(),
                 requestBody,
-                agent.getResponseTimeout()).thenApply(this::extractResponsesContentParsed);
+                agent.getResponseTimeout()).thenApply(json -> extractResponsesContentParsed(json, instance));
     }
 
     /**
@@ -1685,7 +1701,7 @@ public class UnifiedRequestService {
     @Deprecated
     @SuppressWarnings("unchecked")
     private String extractResponsesContent(String jsonResponse) {
-        ParsedResponse parsed = extractResponsesContentParsed(jsonResponse);
+        ParsedResponse parsed = extractResponsesContentParsed(jsonResponse, null);
         if (parsed.hasFunctionCalls()) {
             // Legacy behavior: return text description of function calls
             StringBuilder sb = new StringBuilder();
@@ -1706,7 +1722,7 @@ public class UnifiedRequestService {
      * Returns a ParsedResponse containing both text content and structured FunctionCall objects.
      */
     @SuppressWarnings("unchecked")
-    private ParsedResponse extractResponsesContentParsed(String jsonResponse) {
+    private ParsedResponse extractResponsesContentParsed(String jsonResponse, Instance instance) {
         try {
             Map<String, Object> response = objectMapper.readValue(jsonResponse,
                     new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
@@ -1780,8 +1796,8 @@ public class UnifiedRequestService {
                         ? ((Number) usageMap.get("input_tokens")).intValue() : null;
                 Integer outputTokens = usageMap.get("output_tokens") instanceof Number
                         ? ((Number) usageMap.get("output_tokens")).intValue() : null;
-                tokenUsage = ModelPricing.calculate(
-                        (String) response.get("model"), inputTokens, outputTokens);
+                tokenUsage = calculatePricing(
+                        (String) response.get("model"), inputTokens, outputTokens, instance);
             }
 
             // If we have function calls, return them (with or without text)
@@ -1941,7 +1957,7 @@ public class UnifiedRequestService {
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096,
                 resultClass,
                 tools,
-                agent.getReasoningEffort()).thenApply(this::parseClaudeResponse);
+                agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
     }
 
     // ==================== RESPONSE HANDLING ====================
@@ -2478,9 +2494,10 @@ public class UnifiedRequestService {
         // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (chatResponse.getUsage() != null) {
-            TokenUsage tokenUsage = ModelPricing.calculate(model,
+            TokenUsage tokenUsage = calculatePricing(model,
                     chatResponse.getUsage().getPromptTokens(),
-                    chatResponse.getUsage().getCompletionTokens());
+                    chatResponse.getUsage().getCompletionTokens(),
+                    instance);
             logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
         } else {
@@ -2509,9 +2526,10 @@ public class UnifiedRequestService {
         // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (claudeResponse.getUsage() != null) {
-            TokenUsage tokenUsage = ModelPricing.calculate(model,
+            TokenUsage tokenUsage = calculatePricing(model,
                     claudeResponse.getUsage().getInputTokens(),
-                    claudeResponse.getUsage().getOutputTokens());
+                    claudeResponse.getUsage().getOutputTokens(),
+                    instance);
             logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
         } else {
@@ -2543,9 +2561,10 @@ public class UnifiedRequestService {
         // LOG RESPONSE END with usage
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (claudeResponse.getUsage() != null) {
-            TokenUsage tokenUsage = ModelPricing.calculate(model,
+            TokenUsage tokenUsage = calculatePricing(model,
                     claudeResponse.getUsage().getInputTokens(),
-                    claudeResponse.getUsage().getOutputTokens());
+                    claudeResponse.getUsage().getOutputTokens(),
+                    instance);
             logger.info("<- CHAT STRUCTURED END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
         } else {
@@ -2803,8 +2822,8 @@ public class UnifiedRequestService {
 
         // LOG RESPONSE END with usage
         if (response.getUsage() != null) {
-            TokenUsage tokenUsage = ModelPricing.calculate(model,
-                    response.getUsage().getPromptTokens(), 0);
+            TokenUsage tokenUsage = calculatePricing(model,
+                    response.getUsage().getPromptTokens(), 0, instance);
             logger.info("<- EMBEDDING END | Dimensions: {} | {} | Model: {} | Instance: {}",
                     result.length, ModelPricing.formatForLog(tokenUsage), model, instance.getId());
         } else {
@@ -2849,8 +2868,8 @@ public class UnifiedRequestService {
 
         // LOG RESPONSE END with usage
         if (response.getUsage() != null) {
-            TokenUsage tokenUsage = ModelPricing.calculate(model,
-                    response.getUsage().getPromptTokens(), 0);
+            TokenUsage tokenUsage = calculatePricing(model,
+                    response.getUsage().getPromptTokens(), 0, instance);
             logger.info("<- EMBEDDING BATCH END | Count: {} | Dimensions: {} | {} | Model: {} | Instance: {}",
                     results.size(), results.isEmpty() ? 0 : results.get(0).length,
                     ModelPricing.formatForLog(tokenUsage), model, instance.getId());

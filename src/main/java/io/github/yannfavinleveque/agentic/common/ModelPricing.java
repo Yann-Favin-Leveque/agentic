@@ -24,6 +24,12 @@ public final class ModelPricing {
     static {
         // Entries are sorted by key length descending so longer prefixes match first.
         // Each value is {inputPricePerMTok, outputPricePerMTok}.
+        // ---- OpenAI GPT-5.5 family ----
+        // Source: OpenAI pricing page  (verify pricing at integration time)
+        put("gpt-5.5-mini", 0.50, 3.00);
+        put("gpt-5.5-nano", 0.10, 0.60);
+        put("gpt-5.5-pro", 17.50, 140.00);
+        put("gpt-5.5", 2.00, 12.00);
         // ---- OpenAI GPT-5.4 family ----
         put("gpt-5.4-mini", 0.75, 4.50);
         put("gpt-5.4-nano", 0.15, 0.90);
@@ -59,9 +65,14 @@ public final class ModelPricing {
         put("o3", 2.00, 8.00);
         put("o1-mini", 3.00, 12.00);
         put("o1", 15.00, 60.00);
+        // ---- Anthropic Claude 4.7 ----
+        put("claude-opus-4-7", 5.00, 25.00);
+        put("claude-sonnet-4-7", 3.00, 15.00);
+        put("claude-haiku-4-7", 1.00, 5.00);
         // ---- Anthropic Claude 4.6 ----
         put("claude-opus-4-6", 5.00, 25.00);
         put("claude-sonnet-4-6", 3.00, 15.00);
+        put("claude-haiku-4-6", 1.00, 5.00);
         // ---- Anthropic Claude 4.5 ----
         put("claude-opus-4-5", 5.00, 25.00);
         put("claude-sonnet-4-5", 3.00, 15.00);
@@ -76,7 +87,6 @@ public final class ModelPricing {
         put("claude-3-haiku", 0.25, 1.25);
         // ---- Mistral AI ----
         // Source: https://mistral.ai/products/la-plateforme#pricing (verifier au moment de l'integration)
-        // TODO: verify pricing
         put("mistral-large-latest", 2.00, 6.00);
         put("mistral-large", 2.00, 6.00);
         put("mistral-medium-latest", 2.70, 8.10);
@@ -166,6 +176,96 @@ public final class ModelPricing {
                 .model(model)
                 .estimatedCostUsd(cost)
                 .build();
+    }
+
+    /**
+     * Like {@link #calculate(String, Integer, Integer)} but consults a fallback
+     * pricing map (typically from {@code CustomProviderSpec#getModelPricing()})
+     * when the static table has no match. Useful for {@code Provider.CUSTOM}
+     * instances whose models the library doesn't know about.
+     *
+     * <p>Lookup order: static table (longest-prefix match) -&gt; fallback map
+     * (longest-prefix match) -&gt; {@code cost=null}.</p>
+     *
+     * @param model         Model name
+     * @param inputTokens   Input token count (nullable)
+     * @param outputTokens  Output token count (nullable)
+     * @param fallback      Per-model pricing map, can be {@code null} or empty
+     * @return TokenUsage with cost, or {@code estimatedCostUsd=null} if neither
+     *         the static table nor the fallback map matches
+     */
+    public static TokenUsage calculate(String model, Integer inputTokens, Integer outputTokens,
+            Map<String, PriceEntry> fallback) {
+
+        int in = inputTokens != null ? inputTokens : 0;
+        int out = outputTokens != null ? outputTokens : 0;
+
+        Double cost = null;
+        if (model != null) {
+            String lower = model.toLowerCase();
+
+            // 1) Static table (longest-prefix match).
+            for (Map.Entry<String, double[]> entry : PRICING.entrySet()) {
+                if (lower.startsWith(entry.getKey())) {
+                    double[] p = entry.getValue();
+                    cost = (in * p[0] + out * p[1]) / 1_000_000.0;
+                    break;
+                }
+            }
+
+            // 2) Fallback map (longest-prefix match).
+            if (cost == null && fallback != null && !fallback.isEmpty()) {
+                String bestKey = null;
+                for (String key : fallback.keySet()) {
+                    if (key == null) {
+                        continue;
+                    }
+                    if (lower.startsWith(key.toLowerCase())) {
+                        if (bestKey == null || key.length() > bestKey.length()) {
+                            bestKey = key;
+                        }
+                    }
+                }
+                if (bestKey != null) {
+                    PriceEntry p = fallback.get(bestKey);
+                    if (p != null) {
+                        cost = (in * p.getInput() + out * p.getOutput()) / 1_000_000.0;
+                    }
+                }
+            }
+        }
+
+        return TokenUsage.builder()
+                .inputTokens(inputTokens)
+                .outputTokens(outputTokens)
+                .model(model)
+                .estimatedCostUsd(cost)
+                .build();
+    }
+
+    /**
+     * Input/output pricing for a single model, in USD per 1M tokens.
+     * Used as the value type in {@code CustomProviderSpec.getModelPricing()}.
+     */
+    public static class PriceEntry {
+
+        @com.fasterxml.jackson.annotation.JsonProperty("input")
+        private double input;
+
+        @com.fasterxml.jackson.annotation.JsonProperty("output")
+        private double output;
+
+        public PriceEntry() {}
+
+        public PriceEntry(double input, double output) {
+            this.input = input;
+            this.output = output;
+        }
+
+        public double getInput() { return input; }
+        public double getOutput() { return output; }
+        public void setInput(double input) { this.input = input; }
+        public void setOutput(double output) { this.output = output; }
     }
 
     /**
