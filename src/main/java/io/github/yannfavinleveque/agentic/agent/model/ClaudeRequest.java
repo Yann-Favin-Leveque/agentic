@@ -210,8 +210,7 @@ public class ClaudeRequest {
         /**
          * Optional prompt-caching marker. When set to {@code {"type": "ephemeral"}}, Anthropic caches
          * everything up to and including this block for ~5 minutes; subsequent requests with an identical
-         * prefix get a 90% input-cost discount. Only honored by direct Anthropic — Azure Anthropic ignores
-         * it.
+         * prefix get a 90% input-cost discount. Honored by both direct Anthropic and Azure Anthropic.
          */
         @JsonProperty("cache_control")
         private Map<String, Object> cacheControl;
@@ -365,7 +364,7 @@ public class ClaudeRequest {
 
         /**
          * Optional prompt-caching marker. Set on the LAST tool of the array to mark all tools as cacheable
-         * as one block. Only honored by direct Anthropic — Azure ignores it.
+         * as one block. Honored by both direct Anthropic and Azure Anthropic.
          */
         @JsonProperty("cache_control")
         private Map<String, Object> cacheControl;

@@ -127,10 +127,13 @@ public class ClaudeAdapter {
 
         int resolvedMaxTokens = maxTokens != null ? maxTokens : 4096;
 
-        // Prompt caching: only direct Anthropic supports it. Azure Anthropic ignores cache_control
-        // markers and would not benefit (and might error on some account configs), so we only flag
-        // the system + tools for caching when talking to api.anthropic.com directly.
-        boolean cacheable = instance != null && instance.getProvider() == Provider.ANTHROPIC;
+        // Prompt caching: both direct Anthropic and Azure Anthropic honor cache_control. Verified by
+        // curl on Azure (cache_creation_input_tokens populated on first call, cache_read_input_tokens
+        // on the next). The endpoint reports the same usage fields in either case, so we flag system
+        // + tools identically for both providers.
+        boolean cacheable = instance != null
+                && (instance.getProvider() == Provider.ANTHROPIC
+                        || instance.getProvider() == Provider.AZURE_ANTHROPIC);
 
         ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
                 .model(model)
