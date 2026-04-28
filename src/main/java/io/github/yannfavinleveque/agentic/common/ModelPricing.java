@@ -93,6 +93,20 @@ public final class ModelPricing {
         put("magistral-medium-latest", 2.00, 5.00);
         put("magistral-small-latest", 0.50, 1.50);
         put("mistral-embed", 0.10, 0.00);
+        // ---- Google Gemini ----
+        // Source: https://ai.google.dev/gemini-api/docs/pricing  (verify; tiered by context length)
+        // For >200K context, prices double approximately. We list flat pricing for the standard tier.
+        // TODO: verify pricing
+        put("gemini-2.5-flash-lite", 0.10, 0.40);
+        put("gemini-2.5-flash", 0.30, 2.50);
+        put("gemini-2.5-pro", 1.25, 10.00);
+        put("gemini-2.0-flash-thinking-exp", 0.10, 0.40);
+        put("gemini-2.0-flash-lite", 0.075, 0.30);
+        put("gemini-2.0-flash", 0.10, 0.40);
+        put("gemini-1.5-pro", 1.25, 5.00);
+        put("gemini-1.5-flash", 0.075, 0.30);
+        put("gemini-embedding-001", 0.025, 0.00);
+        put("text-embedding-004", 0.025, 0.00);
         // ---- Embeddings ----
         put("text-embedding-3-small", 0.02, 0.00);
         put("text-embedding-3-large", 0.13, 0.00);
