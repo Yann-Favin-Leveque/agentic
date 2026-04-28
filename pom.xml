@@ -45,14 +45,6 @@
     <url>https://github.com/Yann-Favin-Leveque/agentic-helper/tree/main</url>
   </scm>
 
-  <distributionManagement>
-    <repository>
-      <id>github</id>
-      <name>GitHub Yann-Favin-Leveque Apache Maven Packages</name>
-      <url>https://maven.pkg.github.com/Yann-Favin-Leveque/agentic-helper</url>
-    </repository>
-  </distributionManagement>
-
   <properties>
     <!-- General -->
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
