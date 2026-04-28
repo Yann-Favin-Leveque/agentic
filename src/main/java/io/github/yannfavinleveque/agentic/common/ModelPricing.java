@@ -74,6 +74,25 @@ public final class ModelPricing {
         put("claude-3-5-sonnet", 3.00, 15.00);
         put("claude-3-5-haiku", 1.00, 5.00);
         put("claude-3-haiku", 0.25, 1.25);
+        // ---- Mistral AI ----
+        // Source: https://mistral.ai/products/la-plateforme#pricing (verifier au moment de l'integration)
+        // TODO: verify pricing
+        put("mistral-large-latest", 2.00, 6.00);
+        put("mistral-large", 2.00, 6.00);
+        put("mistral-medium-latest", 2.70, 8.10);
+        put("mistral-medium", 2.70, 8.10);
+        put("mistral-small-latest", 0.20, 0.60);
+        put("mistral-small", 0.20, 0.60);
+        put("ministral-8b-latest", 0.10, 0.10);
+        put("ministral-3b-latest", 0.04, 0.04);
+        put("pixtral-large-latest", 2.00, 6.00);
+        put("pixtral-large", 2.00, 6.00);
+        put("pixtral-12b", 0.15, 0.15);
+        put("codestral-latest", 0.30, 0.90);
+        put("codestral", 0.30, 0.90);
+        put("magistral-medium-latest", 2.00, 5.00);
+        put("magistral-small-latest", 0.50, 1.50);
+        put("mistral-embed", 0.10, 0.00);
         // ---- Embeddings ----
         put("text-embedding-3-small", 0.02, 0.00);
         put("text-embedding-3-large", 0.13, 0.00);
