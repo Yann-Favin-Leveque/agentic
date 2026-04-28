@@ -1289,6 +1289,15 @@ public class AgentService {
         if (instanceConfig.isAnthropic() && allowedProviders.contains("anthropic")) {
             return true;
         }
+        if (instanceConfig.isMistral() && allowedProviders.contains("mistral")) {
+            return true;
+        }
+        if (instanceConfig.isAzureMistral() && allowedProviders.contains("azure-mistral")) {
+            return true;
+        }
+        if (instanceConfig.isCustom() && allowedProviders.contains("custom")) {
+            return true;
+        }
         return false;
     }
 
@@ -1325,6 +1334,12 @@ public class AgentService {
                 providerType = Provider.ANTHROPIC;
             } else if (ic.isAzureOpenAI()) {
                 providerType = Provider.AZURE_OPENAI;
+            } else if (ic.isAzureMistral()) {
+                providerType = Provider.AZURE_MISTRAL;
+            } else if (ic.isMistral()) {
+                providerType = Provider.MISTRAL;
+            } else if (ic.isCustom()) {
+                providerType = Provider.CUSTOM;
             } else {
                 providerType = Provider.OPENAI;
             }
@@ -1342,6 +1357,7 @@ public class AgentService {
                     .azureApiVersion(ic.getApiVersion())
                     .deployedModels(ic.getModelsList())
                     .rateLimits(ic.getRateLimits() != null ? ic.getRateLimits() : java.util.Collections.emptyMap())
+                    .customSpec(ic.getCustom())
                     .build();
 
             result.add(instance);

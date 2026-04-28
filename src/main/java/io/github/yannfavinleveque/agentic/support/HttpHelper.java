@@ -237,6 +237,61 @@ public class HttpHelper {
     }
 
     /**
+     * Custom POST: caller provides the fully-built URL plus a complete header map (auth + extras).
+     * Used by {@code Provider.CUSTOM} where endpoints, auth header name and extra headers all come
+     * from the user-supplied {@link io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec}
+     * and {@link ProviderConfig#getHeaders} cannot be applied.
+     *
+     * @param fullUrl     fully-built URL including query string (no further mutation)
+     * @param headers     headers to set on the request (Content-Type is added automatically)
+     * @param requestBody body to JSON-serialize
+     * @param timeoutMs   per-request timeout in milliseconds
+     * @return future with the raw response body string
+     */
+    public CompletableFuture<String> postRawCustom(
+            String fullUrl,
+            Map<String, String> headers,
+            Object requestBody,
+            long timeoutMs) {
+
+        try {
+            String jsonBody = objectMapper.writeValueAsString(requestBody);
+
+            logger.debug("POST CUSTOM {} - Body: {}", fullUrl, jsonBody);
+
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(fullUrl))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(Duration.ofMillis(timeoutMs));
+
+            if (headers != null) {
+                for (Map.Entry<String, String> h : headers.entrySet()) {
+                    if (h.getKey() == null || h.getValue() == null) continue;
+                    requestBuilder.header(h.getKey(), h.getValue());
+                }
+            }
+
+            HttpRequest request = requestBuilder.build();
+
+            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenApply(response -> {
+                        logger.debug("Response {} - Body: {}", response.statusCode(), response.body());
+
+                        if (response.statusCode() >= 400) {
+                            throw new RuntimeException("HTTP " + response.statusCode() + ": " + response.body());
+                        }
+
+                        return response.body();
+                    });
+
+        } catch (Exception e) {
+            logger.error("HTTP POST (raw custom) failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("HTTP POST failed: " + e.getMessage(), e));
+        }
+    }
+
+    /**
      * Makes a GET request to an API endpoint.
      */
     public <T> CompletableFuture<T> get(

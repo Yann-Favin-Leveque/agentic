@@ -119,6 +119,12 @@ public class InstanceConfig {
     private Map<String, Integer> rateLimits;
 
     /**
+     * Custom provider spec. Required when {@code provider == "custom"}, ignored otherwise.
+     */
+    @JsonProperty("custom")
+    private io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec custom;
+
+    /**
      * Parse the comma-separated models string into a List.
      * @return List of model names
      */
@@ -173,6 +179,30 @@ public class InstanceConfig {
     }
 
     /**
+     * Check if this is a Mistral La Plateforme instance.
+     * @return true if provider is "mistral"
+     */
+    public boolean isMistral() {
+        return "mistral".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is a Mistral via Azure AI Foundry instance.
+     * @return true if provider is "azure-mistral"
+     */
+    public boolean isAzureMistral() {
+        return "azure-mistral".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Check if this is a fully user-defined custom provider instance.
+     * @return true if provider is "custom"
+     */
+    public boolean isCustom() {
+        return "custom".equalsIgnoreCase(provider);
+    }
+
+    /**
      * Check if this instance supports a given model.
      * @param model Model name to check
      * @return true if the model is in the models list
@@ -202,12 +232,22 @@ public class InstanceConfig {
         if (provider == null || provider.trim().isEmpty()) {
             throw new IllegalArgumentException("Instance 'provider' is required for instance: " + id);
         }
-        if (!isOpenAI() && !isAzure() && !isAnthropic()) {
+        if (!isOpenAI() && !isAzure() && !isAnthropic() && !isMistral() && !isAzureMistral() && !isCustom()) {
             throw new IllegalArgumentException(
-                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', or 'anthropic' for instance: " + id + " (got: " + provider + ")");
+                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', 'anthropic', 'mistral', 'azure-mistral', or 'custom' for instance: " + id + " (got: " + provider + ")");
         }
         if (isAzure() && (apiVersion == null || apiVersion.trim().isEmpty())) {
             throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure instances: " + id);
+        }
+        if (isAzureMistral() && (apiVersion == null || apiVersion.trim().isEmpty())) {
+            throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure Mistral instances: " + id);
+        }
+        if (isCustom()) {
+            if (custom == null) {
+                throw new IllegalArgumentException(
+                        "Instance 'custom' block is required when provider is 'custom' for instance: " + id);
+            }
+            custom.validate(id);
         }
 
         // Normalize URL (remove trailing slash)

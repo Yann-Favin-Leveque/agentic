@@ -5,7 +5,11 @@ import io.github.yannfavinleveque.agentic.agent.config.AgentServiceConfig;
 import io.github.yannfavinleveque.agentic.agent.config.RetryConfig;
 import io.github.yannfavinleveque.agentic.agent.core.Agent;
 import io.github.yannfavinleveque.agentic.agent.core.Instance;
+import io.github.yannfavinleveque.agentic.agent.core.Provider;
 import io.github.yannfavinleveque.agentic.agent.core.ProviderConfig;
+import io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec;
+import io.github.yannfavinleveque.agentic.agent.custom.Feature;
+import io.github.yannfavinleveque.agentic.agent.custom.FeatureValidator;
 import io.github.yannfavinleveque.agentic.agent.exception.AgentException;
 import io.github.yannfavinleveque.agentic.agent.exception.ContentFilterException;
 import io.github.yannfavinleveque.agentic.agent.exception.RateLimitException;
@@ -37,6 +41,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -384,8 +389,15 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        if (ProviderConfig.isAnthropicModel(agent.getModel())) {
+        // Routing order: custom > anthropic > mistral > openai
+        if (instance.getProvider() == Provider.CUSTOM) {
+            requestFuture = executeCustomRequest(agent, messagesWithUser, instance);
+        } else if (ProviderConfig.isAnthropicModel(agent.getModel())) {
             requestFuture = executeClaudeRequestWithImages(agent, messagesWithUser, instance);
+        } else if (MistralAdapter.isMistralModel(agent.getModel())
+                || instance.getProvider() == Provider.MISTRAL
+                || instance.getProvider() == Provider.AZURE_MISTRAL) {
+            requestFuture = executeMistralRequest(agent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequestWithImages(agent, messagesWithUser, instance);
         }
@@ -499,6 +511,478 @@ public class UnifiedRequestService {
                 resultClass,
                 tools,
                 agent.getReasoningEffort()).thenApply(this::parseClaudeResponse);
+    }
+
+    // ==================== MISTRAL CHAT COMPLETIONS ====================
+
+    /**
+     * Executes a Mistral request via the OpenAI-compatible /v1/chat/completions endpoint
+     * (or /models/chat/completions on Azure AI Foundry). Used for both
+     * {@link Provider#MISTRAL} and {@link Provider#AZURE_MISTRAL} instances.
+     *
+     * <p>Differences from {@link #executeOpenAIRequestWithImages}:</p>
+     * <ul>
+     *   <li>Uses chat/completions message format (role + content), not Responses API input items.</li>
+     *   <li>Roles are sanitized via {@link MistralAdapter#sanitizeRole}.</li>
+     *   <li>System instructions are prepended as a leading {@code system} message.</li>
+     *   <li>Tools follow the standard {@code {type:"function",function:{...}}} format.</li>
+     *   <li>{@code response_format} carries the JSON schema (no Responses {@code text.format}).</li>
+     *   <li>Magistral models get {@code prompt_mode: "reasoning"} via {@link MistralAdapter}.</li>
+     * </ul>
+     */
+    private CompletableFuture<ParsedResponse> executeMistralRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance) {
+
+        List<Map<String, Object>> messages = new ArrayList<>();
+
+        // Prepend system instructions (Mistral takes them as a regular system message).
+        if (agent.getInstructions() != null && !agent.getInstructions().isEmpty()) {
+            Map<String, Object> sys = new HashMap<>();
+            sys.put("role", "system");
+            sys.put("content", agent.getInstructions());
+            messages.add(sys);
+        }
+
+        for (Message msg : messagesWithUser) {
+            messages.addAll(buildChatCompletionsMessages(msg));
+        }
+
+        // Tools (no web_search / code_interpreter — Mistral doesn't have native versions).
+        List<Map<String, Object>> tools = buildChatCompletionsTools(agent);
+
+        Map<String, Object> responseFormat = buildChatCompletionsResponseFormat(agent);
+
+        Map<String, Object> body = MistralAdapter.buildRequestBody(agent, messages, tools, responseFormat);
+
+        return httpHelper.postRaw(
+                instance,
+                ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                agent.getModel(),
+                body,
+                agent.getResponseTimeout())
+                .thenApply(this::extractChatCompletionsContentParsed);
+    }
+
+    /**
+     * Builds chat-completions-format messages from a single Message, mirroring the OpenAI
+     * Chat Completions wire shape used by Mistral / Grok / DeepSeek / etc.
+     *
+     * <ul>
+     *   <li>tool result → {@code {role:"tool", tool_call_id, content}}</li>
+     *   <li>assistant with tool calls → {@code {role:"assistant", content, tool_calls:[...]}}</li>
+     *   <li>multimodal user → content array with {@code text} + {@code image_url} parts</li>
+     *   <li>plain text → {@code {role, content}}</li>
+     * </ul>
+     */
+    private List<Map<String, Object>> buildChatCompletionsMessages(Message msg) {
+        List<Map<String, Object>> out = new ArrayList<>();
+
+        if (msg.isToolResult()) {
+            Map<String, Object> m = new HashMap<>();
+            m.put("role", "tool");
+            m.put("tool_call_id", msg.getToolCallId());
+            m.put("content", msg.getContent() == null ? "" : msg.getContent());
+            out.add(m);
+            return out;
+        }
+
+        if (msg.isAssistant() && msg.hasToolCalls()) {
+            Map<String, Object> m = new HashMap<>();
+            m.put("role", "assistant");
+            m.put("content", msg.getContent() == null ? "" : msg.getContent());
+            List<Map<String, Object>> calls = new ArrayList<>();
+            for (FunctionCall fc : msg.getFunctionCalls()) {
+                Map<String, Object> call = new HashMap<>();
+                call.put("id", fc.getId());
+                call.put("type", "function");
+                Map<String, Object> fn = new HashMap<>();
+                fn.put("name", fc.getName());
+                fn.put("arguments", fc.getArguments() == null ? "{}" : fc.getArguments());
+                call.put("function", fn);
+                calls.add(call);
+            }
+            m.put("tool_calls", calls);
+            out.add(m);
+            return out;
+        }
+
+        Map<String, Object> m = new HashMap<>();
+        m.put("role", MistralAdapter.sanitizeRole(msg.getRole()));
+
+        if (msg.isMultimodal()) {
+            List<Map<String, Object>> contentParts = new ArrayList<>();
+            for (Message.ContentPart part : msg.getContentParts()) {
+                Map<String, Object> p = new HashMap<>();
+                switch (part.getType()) {
+                    case "text":
+                        p.put("type", "text");
+                        p.put("text", part.getText());
+                        break;
+                    case "image_url":
+                        p.put("type", "image_url");
+                        Map<String, Object> imgU = new HashMap<>();
+                        imgU.put("url", part.getImageUrl());
+                        p.put("image_url", imgU);
+                        break;
+                    case "image_base64":
+                        p.put("type", "image_url");
+                        Map<String, Object> imgB = new HashMap<>();
+                        String dataUrl = "data:" + part.getMediaType() + ";base64," + part.getImageBase64();
+                        imgB.put("url", dataUrl);
+                        p.put("image_url", imgB);
+                        break;
+                    default:
+                        logger.warn("Unknown content part type for chat/completions: {}", part.getType());
+                        continue;
+                }
+                contentParts.add(p);
+            }
+            m.put("content", contentParts);
+        } else {
+            m.put("content", msg.getContent() == null ? "" : msg.getContent());
+        }
+
+        out.add(m);
+        return out;
+    }
+
+    /**
+     * Builds chat-completions-format tools list from the agent's function definitions.
+     * Returns null if the agent has no functions configured. Web search and code interpreter
+     * are intentionally NOT included — providers using this format (Mistral, Grok, ...) do
+     * not implement them as native tools.
+     */
+    private List<Map<String, Object>> buildChatCompletionsTools(Agent agent) {
+        if (agent.getFunctions() == null || agent.getFunctions().isEmpty()) {
+            return null;
+        }
+        List<Map<String, Object>> tools = new ArrayList<>();
+        String parameterClassPackage = config.getFunctionParameterClassPackage();
+        for (var func : agent.getFunctions()) {
+            if (!ToolBuilder.isFunctionEnabledForAgent(func, agent)) {
+                continue;
+            }
+            Map<String, Object> tool = new HashMap<>();
+            tool.put("type", "function");
+            Map<String, Object> fn = new HashMap<>();
+            fn.put("name", func.getName());
+            if (func.getDescription() != null) {
+                fn.put("description", func.getDescription());
+            }
+            fn.put("parameters", ToolBuilder.buildFunctionSchema(func, parameterClassPackage));
+            tool.put("function", fn);
+            tools.add(tool);
+        }
+        return tools.isEmpty() ? null : tools;
+    }
+
+    /**
+     * Builds {@code response_format} for chat-completions when the agent declares a result class.
+     * Returns null if structured output is not requested or the class can't be resolved.
+     */
+    private Map<String, Object> buildChatCompletionsResponseFormat(Agent agent) {
+        if (agent.getResultClass() == null || agent.getResultClass().isEmpty()) {
+            return null;
+        }
+        String fullClassName = config.resolveResultClassName(agent.getResultClass());
+        if (fullClassName == null) {
+            logger.warn("Cannot resolve result class '{}' for chat-completions response_format",
+                    agent.getResultClass());
+            return null;
+        }
+        try {
+            Class<?> resultClass = Class.forName(fullClassName);
+            Map<String, Object> schema = JsonSchemaGenerator.createFunctionSchemaFromClass(resultClass);
+
+            Map<String, Object> jsonSchema = new HashMap<>();
+            jsonSchema.put("name", resultClass.getSimpleName().toLowerCase() + "_response");
+            jsonSchema.put("schema", schema);
+            jsonSchema.put("strict", true);
+
+            Map<String, Object> rf = new HashMap<>();
+            rf.put("type", "json_schema");
+            rf.put("json_schema", jsonSchema);
+            return rf;
+        } catch (ClassNotFoundException e) {
+            logger.warn("Result class not found for response_format: {}", agent.getResultClass());
+            return null;
+        }
+    }
+
+    /**
+     * Extracts content and function calls from an OpenAI-compatible chat/completions JSON response
+     * (used by Mistral, Grok, DeepSeek, Together, Ollama, ...).
+     *
+     * <p>Detects {@code finish_reason == "length"} and throws
+     * {@link AgentException.ErrorCode#MAX_TOKENS_EXCEEDED} for parity with Claude/OpenAI Responses.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private ParsedResponse extractChatCompletionsContentParsed(String jsonResponse) {
+        try {
+            Map<String, Object> response = objectMapper.readValue(jsonResponse,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                    });
+
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+            if (choices == null || choices.isEmpty()) {
+                throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED,
+                        "No choices in chat completions response");
+            }
+            Map<String, Object> choice0 = choices.get(0);
+            String finishReason = (String) choice0.get("finish_reason");
+            if ("length".equals(finishReason)) {
+                throw new AgentException(AgentException.ErrorCode.MAX_TOKENS_EXCEEDED,
+                        "Chat completions response truncated (finish_reason=length). "
+                                + "Consider increasing maxTokens or reducing prompt size.");
+            }
+
+            Map<String, Object> message = (Map<String, Object>) choice0.get("message");
+            String text = null;
+            List<FunctionCall> functionCalls = new ArrayList<>();
+            if (message != null) {
+                Object contentObj = message.get("content");
+                if (contentObj instanceof String) {
+                    text = (String) contentObj;
+                } else if (contentObj instanceof List) {
+                    StringBuilder sb = new StringBuilder();
+                    for (Object part : (List<?>) contentObj) {
+                        if (part instanceof Map) {
+                            Object t = ((Map<?, ?>) part).get("text");
+                            if (t != null) sb.append(t);
+                        }
+                    }
+                    text = sb.length() > 0 ? sb.toString() : null;
+                }
+
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) message.get("tool_calls");
+                if (toolCalls != null) {
+                    for (Map<String, Object> tc : toolCalls) {
+                        String id = (String) tc.get("id");
+                        Map<String, Object> fn = (Map<String, Object>) tc.get("function");
+                        String name = fn != null ? (String) fn.get("name") : null;
+                        Object args = fn != null ? fn.get("arguments") : null;
+                        String argsStr;
+                        if (args == null) {
+                            argsStr = "{}";
+                        } else if (args instanceof String) {
+                            argsStr = (String) args;
+                        } else {
+                            try {
+                                argsStr = objectMapper.writeValueAsString(args);
+                            } catch (Exception ex) {
+                                argsStr = args.toString();
+                            }
+                        }
+                        functionCalls.add(FunctionCall.builder()
+                                .id(id)
+                                .name(name)
+                                .arguments(argsStr)
+                                .build());
+                    }
+                }
+            }
+
+            TokenUsage tokenUsage = null;
+            Map<String, Object> usageMap = (Map<String, Object>) response.get("usage");
+            if (usageMap != null) {
+                Integer promptTokens = usageMap.get("prompt_tokens") instanceof Number
+                        ? ((Number) usageMap.get("prompt_tokens")).intValue() : null;
+                Integer completionTokens = usageMap.get("completion_tokens") instanceof Number
+                        ? ((Number) usageMap.get("completion_tokens")).intValue() : null;
+                String model = (String) response.get("model");
+                tokenUsage = ModelPricing.calculate(model, promptTokens, completionTokens);
+            }
+
+            if (!functionCalls.isEmpty()) {
+                return ParsedResponse.of(text, functionCalls, tokenUsage);
+            }
+            return ParsedResponse.ofText(text == null ? "" : text, tokenUsage);
+
+        } catch (Exception e) {
+            if (e instanceof AgentException) {
+                throw (AgentException) e;
+            }
+            throw new AgentException(AgentException.ErrorCode.REQUEST_FAILED,
+                    "Failed to parse chat completions response: " + e.getMessage(), e);
+        }
+    }
+
+    // ==================== CUSTOM PROVIDER ====================
+
+    /**
+     * Executes a request to a {@link Provider#CUSTOM} instance, dispatching by
+     * {@link CustomProviderSpec#getApiFormat()}. Validates required features against
+     * the spec first (may throw {@link io.github.yannfavinleveque.agentic.agent.exception.UnsupportedFeatureException}
+     * in {@link io.github.yannfavinleveque.agentic.agent.custom.LenientMode#THROW} mode).
+     */
+    private CompletableFuture<ParsedResponse> executeCustomRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance) {
+
+        CustomProviderSpec spec = instance.getCustomSpec();
+        if (spec == null) {
+            return CompletableFuture.failedFuture(new AgentException(
+                    AgentException.ErrorCode.INVALID_CONFIGURATION,
+                    "Instance " + instance.getId() + " is provider=CUSTOM but has no custom spec"));
+        }
+
+        // 1. Validate features required by the agent against the spec.
+        EnumSet<Feature> requested = collectRequestedFeatures(agent);
+        try {
+            FeatureValidator.validate(instance.getId(), spec, requested);
+        } catch (RuntimeException re) {
+            return CompletableFuture.failedFuture(re);
+        }
+        // Note: the returned EnumSet is currently not used to mutate the agent — request body
+        // builders always inspect the agent flags directly. Any unsupported feature was either
+        // already thrown above (THROW) or logged/ignored (WARN/IGNORE). The corresponding feature
+        // is then naturally absent from the wire body because the lenient validator did not
+        // promise to emit it. TODO(v1.22): re-evaluate features at body-build time so WARN/IGNORE
+        // can also strip e.g. function tool definitions when the provider doesn't support them.
+
+        String fmt = spec.getApiFormat() == null ? "" : spec.getApiFormat().toLowerCase();
+        switch (fmt) {
+            case "openai-chat":
+                return executeCustomOpenAIChatRequest(agent, messagesWithUser, instance, spec);
+            case "openai-responses":
+                // TODO(v1.22): implement openai-responses for CUSTOM. Most non-OpenAI providers
+                // do not expose Responses API anyway, so this is intentionally deferred.
+                // INVALID_CONFIGURATION code -> not retried by the network-retry path.
+                return CompletableFuture.failedFuture(new AgentException(
+                        AgentException.ErrorCode.INVALID_CONFIGURATION,
+                        "apiFormat=openai-responses is not yet implemented for Provider.CUSTOM "
+                                + "(instance " + instance.getId() + "). "
+                                + "Use apiFormat=openai-chat instead, or open an issue."));
+            case "anthropic-messages":
+                // TODO(v1.22): implement anthropic-messages for CUSTOM by reusing ClaudeAdapter
+                // with a custom URL/headers builder. Deferred to keep this release focused.
+                // INVALID_CONFIGURATION code -> not retried by the network-retry path.
+                return CompletableFuture.failedFuture(new AgentException(
+                        AgentException.ErrorCode.INVALID_CONFIGURATION,
+                        "apiFormat=anthropic-messages is not yet implemented for Provider.CUSTOM "
+                                + "(instance " + instance.getId() + "). "
+                                + "Use Provider.ANTHROPIC or Provider.AZURE_ANTHROPIC for native Claude routing, "
+                                + "or open an issue."));
+            default:
+                return CompletableFuture.failedFuture(new AgentException(
+                        AgentException.ErrorCode.INVALID_CONFIGURATION,
+                        "Unknown apiFormat: " + spec.getApiFormat() + " for instance " + instance.getId()));
+        }
+    }
+
+    /**
+     * Implements {@code apiFormat=openai-chat} for {@link Provider#CUSTOM}. Builds the OpenAI
+     * Chat Completions wire format (same as Mistral) but reads endpoint path, auth header, query
+     * params and extra headers from the spec instead of {@link ProviderConfig}.
+     *
+     * <p>Covers Mistral (when wired manually), Grok (xAI), DeepSeek, Together, Groq, Ollama,
+     * and any other OpenAI-compatible chat/completions endpoint.</p>
+     */
+    private CompletableFuture<ParsedResponse> executeCustomOpenAIChatRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance, CustomProviderSpec spec) {
+
+        // 1. Build messages (same shape as Mistral / OpenAI Chat Completions)
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (agent.getInstructions() != null && !agent.getInstructions().isEmpty()) {
+            Map<String, Object> sys = new HashMap<>();
+            sys.put("role", "system");
+            sys.put("content", agent.getInstructions());
+            messages.add(sys);
+        }
+        for (Message msg : messagesWithUser) {
+            messages.addAll(buildChatCompletionsMessages(msg));
+        }
+
+        // 2. Build body
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", agent.getModel());
+        body.put("messages", messages);
+        if (agent.getTemperature() != null) {
+            body.put("temperature", agent.getTemperature());
+        }
+        body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
+
+        if (spec.supports(Feature.FUNCTION_CALLING)) {
+            List<Map<String, Object>> tools = buildChatCompletionsTools(agent);
+            if (tools != null && !tools.isEmpty()) {
+                body.put("tools", tools);
+            }
+        }
+        if (spec.supports(Feature.STRUCTURED_OUTPUT)) {
+            Map<String, Object> rf = buildChatCompletionsResponseFormat(agent);
+            if (rf != null) {
+                body.put("response_format", rf);
+            }
+        }
+
+        // 3. Resolve URL: baseUrl + spec endpoint path + spec query params
+        String endpointPath = spec.getEndpointPath("chat_completions");
+        if (endpointPath == null || endpointPath.isEmpty()) {
+            return CompletableFuture.failedFuture(new AgentException(
+                    AgentException.ErrorCode.INVALID_CONFIGURATION,
+                    "Custom provider '" + instance.getId() + "' does not declare endpoints.chat_completions"));
+        }
+        String fullUrl = buildCustomUrl(instance.getBaseUrl(), endpointPath, spec.getQueryParamsView());
+
+        // 4. Build headers: auth + extras
+        Map<String, String> headers = new HashMap<>();
+        if (spec.getAuth() != null && spec.getAuth().getHeader() != null) {
+            headers.put(spec.getAuth().getHeader(),
+                    spec.getAuth().renderValue(instance.getApiKey()));
+        }
+        for (Map.Entry<String, String> h : spec.getExtraHeadersView().entrySet()) {
+            headers.put(h.getKey(), h.getValue());
+        }
+
+        long timeoutMs = agent.getResponseTimeout() != null ? agent.getResponseTimeout() : 120_000L;
+
+        return httpHelper.postRawCustom(fullUrl, headers, body, timeoutMs)
+                .thenApply(this::extractChatCompletionsContentParsed);
+    }
+
+    /** Returns the EnumSet of {@link Feature}s the agent's configuration requires. */
+    private EnumSet<Feature> collectRequestedFeatures(Agent agent) {
+        EnumSet<Feature> set = EnumSet.noneOf(Feature.class);
+        if (Boolean.TRUE.equals(agent.getWebSearch())) {
+            set.add(Feature.WEB_SEARCH);
+        }
+        if (Boolean.TRUE.equals(agent.getCodeInterpreter())) {
+            set.add(Feature.CODE_INTERPRETER);
+        }
+        if (agent.getResultClass() != null && !agent.getResultClass().isEmpty()) {
+            set.add(Feature.STRUCTURED_OUTPUT);
+        }
+        if (agent.getFunctions() != null && !agent.getFunctions().isEmpty()) {
+            set.add(Feature.FUNCTION_CALLING);
+        }
+        if (agent.getReasoningEffort() != null && !agent.getReasoningEffort().isBlank()
+                && !"none".equalsIgnoreCase(agent.getReasoningEffort())) {
+            set.add(Feature.REASONING);
+        }
+        // VISION is request-time, not agent-time -> handled at the per-request level
+        // by executeXxxWithImages variants. For now, do not add it here.
+        return set;
+    }
+
+    /**
+     * Concatenates a base URL with a custom-spec endpoint path and appends query parameters
+     * (URL-encoded as in {@link ProviderConfig#buildUrl}).
+     */
+    private String buildCustomUrl(String baseUrl, String path, Map<String, String> queryParams) {
+        String b = baseUrl == null ? "" : baseUrl;
+        if (b.endsWith("/")) {
+            b = b.substring(0, b.length() - 1);
+        }
+        StringBuilder sb = new StringBuilder(b).append(path);
+        if (queryParams != null && !queryParams.isEmpty()) {
+            sb.append('?');
+            boolean first = true;
+            for (Map.Entry<String, String> e : queryParams.entrySet()) {
+                if (!first) sb.append('&');
+                sb.append(e.getKey()).append('=').append(e.getValue());
+                first = false;
+            }
+        }
+        return sb.toString();
     }
 
     /**
@@ -768,8 +1252,15 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        if (ProviderConfig.isAnthropicModel(tempAgent.getModel())) {
+        // Routing order: custom > anthropic > mistral > openai
+        if (instance.getProvider() == Provider.CUSTOM) {
+            requestFuture = executeCustomRequest(tempAgent, messagesWithUser, instance);
+        } else if (ProviderConfig.isAnthropicModel(tempAgent.getModel())) {
             requestFuture = executeClaudeRequestModelInternal(tempAgent, messagesWithUser, options, instance);
+        } else if (MistralAdapter.isMistralModel(tempAgent.getModel())
+                || instance.getProvider() == Provider.MISTRAL
+                || instance.getProvider() == Provider.AZURE_MISTRAL) {
+            requestFuture = executeMistralRequest(tempAgent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequestModelInternal(tempAgent, messagesWithUser, options, instance);
         }
@@ -1015,8 +1506,31 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        if (ProviderConfig.isAnthropicModel(agent.getModel())) {
+        // Routing order: custom > anthropic > mistral > openai
+        if (instance.getProvider() == Provider.CUSTOM) {
+            // Build a synthetic message list (history + current user) and route via the
+            // multimodal-aware path which is fine for plain text too.
+            List<Message> messagesWithUser = new ArrayList<>();
+            if (history != null) {
+                messagesWithUser.addAll(history);
+            }
+            if (userMessage != null) {
+                messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
+            }
+            requestFuture = executeCustomRequest(agent, messagesWithUser, instance);
+        } else if (ProviderConfig.isAnthropicModel(agent.getModel())) {
             requestFuture = executeClaudeRequest(agent, userMessage, history, instance);
+        } else if (MistralAdapter.isMistralModel(agent.getModel())
+                || instance.getProvider() == Provider.MISTRAL
+                || instance.getProvider() == Provider.AZURE_MISTRAL) {
+            List<Message> messagesWithUser = new ArrayList<>();
+            if (history != null) {
+                messagesWithUser.addAll(history);
+            }
+            if (userMessage != null) {
+                messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
+            }
+            requestFuture = executeMistralRequest(agent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequest(agent, userMessage, history, instance);
         }
@@ -1554,6 +2068,10 @@ public class UnifiedRequestService {
                     return effectiveConfig.resolveDeserializationRetries(globalDefault);
                 case MAX_ITERATIONS_EXCEEDED:
                     return effectiveConfig.resolveMaxIterationRetries(globalDefault);
+                case INVALID_CONFIGURATION:
+                case UNSUPPORTED_FEATURE:
+                    // Configuration / unsupported-feature errors are deterministic — never retry.
+                    return -1;
                 default:
                     break;
             }

@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Represents an OpenAI/Azure instance with its configuration and capabilities.
+ * Represents an LLM provider instance with its configuration and capabilities.
+ * Supports OpenAI, Azure OpenAI, Anthropic, Azure Anthropic, Mistral, Azure Mistral
+ * and user-defined CUSTOM providers (see {@code customSpec}).
  * Each instance tracks which models are deployed and available.
  *
  * Note: This class no longer holds a SimpleOpenAI client. All HTTP calls
@@ -60,6 +62,14 @@ public class Instance {
      */
     @Builder.Default
     private final Map<String, Integer> rateLimits = Collections.emptyMap();
+
+    /**
+     * Custom provider spec (only set when {@code provider == Provider.CUSTOM}).
+     * Carries the JSON-driven endpoints, authentication, headers, query params and
+     * feature flags declared in {@code InstanceConfig.custom}.
+     * Null for built-in providers (OPENAI, AZURE_*, ANTHROPIC, MISTRAL, AZURE_MISTRAL).
+     */
+    private final io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec customSpec;
 
     /**
      * Returns the rate limit for a specific model on this instance.

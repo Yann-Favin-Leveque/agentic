@@ -29,6 +29,28 @@ public enum Provider {
     ANTHROPIC,
 
     /**
+     * Mistral La Plateforme (api.mistral.ai).
+     * OpenAI-compatible Chat Completions API. No Responses API.
+     * Models: mistral-large-latest, pixtral-large-latest, codestral-latest, magistral-medium-latest, ...
+     */
+    MISTRAL,
+
+    /**
+     * Mistral via Azure AI Foundry (*.services.ai.azure.com).
+     * OpenAI-compatible Chat Completions, served under /models/chat/completions
+     * with an api-version query parameter and api-key header.
+     */
+    AZURE_MISTRAL,
+
+    /**
+     * Fully user-defined provider, configured via {@link io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec}
+     * inside the instance JSON. Endpoints, auth, headers, supported features are
+     * all data-driven. Wire format must be one of: openai-chat, openai-responses,
+     * anthropic-messages.
+     */
+    CUSTOM,
+
+    /**
      * Legacy: Alias for AZURE_OPENAI (backward compatibility)
      * Use AZURE_OPENAI or AZURE_ANTHROPIC instead
      */
