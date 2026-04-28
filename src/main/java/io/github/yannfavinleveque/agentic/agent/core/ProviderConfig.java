@@ -10,6 +10,17 @@ import java.util.Set;
  * Centralized configuration for all API providers. Contains endpoint paths, authentication headers,
  * and query parameters for each provider.
  * <p>
+ * Built-in providers: {@link Provider#OPENAI}, {@link Provider#AZURE_OPENAI},
+ * {@link Provider#ANTHROPIC}, {@link Provider#AZURE_ANTHROPIC}, {@link Provider#MISTRAL},
+ * {@link Provider#AZURE_MISTRAL}.
+ * </p>
+ * <p>
+ * For providers not natively supported, use {@link Provider#CUSTOM} together with a
+ * {@link io.github.yannfavinleveque.agentic.agent.custom.CustomProviderSpec} declared in the
+ * instance JSON. CUSTOM providers do NOT route through getPath/getHeaders/getQueryParams here
+ * — the caller in {@code UnifiedRequestService} reads them directly from the spec.
+ * </p>
+ * <p>
  * To add a new provider:
  * </p>
  * <ol>
@@ -170,6 +181,17 @@ public final class ProviderConfig {
                 return getAzureAnthropicPath(endpoint);
             case ANTHROPIC:
                 return getAnthropicPath(endpoint);
+            case MISTRAL:
+                return getMistralPath(endpoint);
+            case AZURE_MISTRAL:
+                return getAzureMistralPath(endpoint, model);
+            case CUSTOM:
+                // CUSTOM paths are read from CustomProviderSpec by the caller
+                // (UnifiedRequestService). getPath() should not be called for CUSTOM
+                // providers - throw a clear error.
+                throw new UnsupportedOperationException(
+                        "ProviderConfig.getPath should not be called for Provider.CUSTOM. "
+                                + "Use CustomProviderSpec.getEndpointPath() instead.");
             default:
                 throw new IllegalArgumentException("Unknown provider: " + provider);
         }
@@ -365,6 +387,34 @@ public final class ProviderConfig {
                 "Anthropic doesn't support: " + endpoint + ". Only CHAT_COMPLETIONS is available.");
     }
 
+    private static String getMistralPath(Endpoint endpoint) {
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return "/v1/chat/completions";
+            case EMBEDDINGS:
+                return "/v1/embeddings";
+            default:
+                throw new UnsupportedOperationException(
+                        "Mistral doesn't support: " + endpoint
+                                + ". Supported: CHAT_COMPLETIONS, EMBEDDINGS.");
+        }
+    }
+
+    private static String getAzureMistralPath(Endpoint endpoint, String model) {
+        // Azure AI Foundry uses a /models prefix, no per-model deployment in path.
+        // Model name goes in the request body.
+        switch (endpoint) {
+            case CHAT_COMPLETIONS:
+                return "/models/chat/completions";
+            case EMBEDDINGS:
+                return "/models/embeddings";
+            default:
+                throw new UnsupportedOperationException(
+                        "Azure Mistral doesn't support: " + endpoint
+                                + ". Supported: CHAT_COMPLETIONS, EMBEDDINGS.");
+        }
+    }
+
     private static String requireModel(String model) {
         if (model == null || model.trim().isEmpty()) {
             throw new IllegalArgumentException("Model is required for Azure OpenAI deployment endpoints");
@@ -401,6 +451,16 @@ public final class ProviderConfig {
                 headers.put("x-api-key", apiKey);
                 headers.put("anthropic-version", apiVersion != null ? apiVersion : "2023-06-01");
                 break;
+            case MISTRAL:
+                headers.put("Authorization", "Bearer " + apiKey);
+                break;
+            case AZURE_MISTRAL:
+                headers.put("api-key", apiKey);
+                break;
+            case CUSTOM:
+                throw new UnsupportedOperationException(
+                        "ProviderConfig.getHeaders should not be called for Provider.CUSTOM. "
+                                + "Build headers from CustomProviderSpec.getAuth() and getExtraHeaders().");
             default:
                 throw new IllegalArgumentException("Unknown provider: " + provider);
         }
@@ -461,6 +521,19 @@ public final class ProviderConfig {
             case ANTHROPIC:
                 // No query params needed
                 break;
+            case MISTRAL:
+                // No query params required
+                break;
+            case AZURE_MISTRAL:
+                if (apiVersion == null || apiVersion.trim().isEmpty()) {
+                    throw new IllegalArgumentException("API version is required for Azure Mistral");
+                }
+                params.put("api-version", apiVersion);
+                break;
+            case CUSTOM:
+                throw new UnsupportedOperationException(
+                        "ProviderConfig.getQueryParams should not be called for Provider.CUSTOM. "
+                                + "Use CustomProviderSpec.getQueryParams() instead.");
             default:
                 throw new IllegalArgumentException("Unknown provider: " + provider);
         }
@@ -487,6 +560,13 @@ public final class ProviderConfig {
             case AZURE_ANTHROPIC:
             case ANTHROPIC:
                 return endpoint == Endpoint.CHAT_COMPLETIONS;
+            case MISTRAL:
+            case AZURE_MISTRAL:
+                return endpoint == Endpoint.CHAT_COMPLETIONS || endpoint == Endpoint.EMBEDDINGS;
+            case CUSTOM:
+                // For CUSTOM, "support" is determined by the spec's endpoints map; the caller
+                // (UnifiedRequestService) does that lookup, not this static method.
+                return true;
             default:
                 return false;
         }

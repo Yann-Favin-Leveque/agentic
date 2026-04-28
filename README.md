@@ -1091,7 +1091,7 @@ unset ENABLED_PROVIDERS
 
 ## Multi-Provider Support
 
-AgentService supports four providers with automatic routing:
+AgentService supports seven built-in providers plus a JSON-driven CUSTOM provider, all with automatic routing:
 
 | Provider | Description | Models |
 |----------|-------------|--------|
@@ -1099,12 +1099,178 @@ AgentService supports four providers with automatic routing:
 | `azure-openai` | Azure OpenAI | gpt-4o, gpt-5.1-chat (deployed models) |
 | `anthropic` | Anthropic API direct | claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5 |
 | `azure-anthropic` | Azure AI (Claude) | claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-5 |
+| `mistral` | Mistral La Plateforme | mistral-large-latest, pixtral-large-latest, codestral-latest, magistral-medium-latest, ministral-* |
+| `azure-mistral` | Mistral via Azure AI Foundry | mistral-large-* (deployed) |
+| `custom` | User-defined provider via JSON spec | Any (Grok, DeepSeek, Together, Groq, Ollama, ...) |
 
 The service automatically:
 - Routes requests to instances that have the requested model
 - Load-balances across multiple instances
 - Handles rate limiting per instance
 - Retries on transient failures
+
+Routing precedence inside the request executor: **custom > anthropic > mistral > openai**. An instance whose `provider` is `custom` short-circuits everything (no model-name sniffing); for the other built-in providers, the model name (`claude-*`, `mistral-*`, `pixtral-*`, `codestral-*`, `magistral-*`, `ministral-*`) selects the right adapter.
+
+### Mistral support
+
+Mistral models talk OpenAI-compatible chat/completions, so configuration mirrors the OpenAI block — only the base URL, key and model list change:
+
+```json
+[
+  {
+    "id": "mistral-main",
+    "url": "https://api.mistral.ai",
+    "key": "${MISTRAL_API_KEY}",
+    "models": "mistral-large-latest,pixtral-large-latest,codestral-latest,magistral-medium-latest",
+    "provider": "mistral"
+  },
+  {
+    "id": "azure-mistral-eastus",
+    "url": "https://my-foundry.services.ai.azure.com",
+    "key": "${AZURE_MISTRAL_KEY}",
+    "models": "mistral-large-2411",
+    "provider": "azure-mistral",
+    "apiVersion": "2024-05-01-preview"
+  }
+]
+```
+
+Notes:
+- Mistral does **not** expose OpenAI's `/v1/responses`. The library always routes Mistral requests to `/v1/chat/completions` (or `/models/chat/completions` on Azure Mistral).
+- The OpenAI-introduced `developer` role is automatically rewritten to `system` for Mistral.
+- `magistral-*` reasoning models receive `prompt_mode: "reasoning"` automatically.
+- Native `web_search` and `code_interpreter` tools are not available — set `webSearch=false` / `codeInterpreter=false` on agents pinned to Mistral instances. Use the `instances` allow-list on the agent (see `AgentDefinition.instances`) to keep tool-heavy agents on OpenAI/Claude only.
+
+### Custom Provider
+
+When you need a provider that the library does not natively support (Grok / xAI, DeepSeek, Together AI, Groq, OpenRouter, Ollama, a private internal LLM gateway...), declare it as a `custom` instance and describe its wire format in JSON.
+
+#### When to use it
+- The provider speaks one of: **OpenAI Chat Completions**, OpenAI Responses, or Anthropic Messages.
+- You want to swap providers without rebuilding the library.
+- You want strict declared-capability checking (the library will refuse — or warn, or silently strip — agent features the provider has not declared).
+
+#### JSON schema of a custom block
+
+```json
+{
+  "id": "grok-main",
+  "url": "https://api.x.ai",
+  "key": "${XAI_API_KEY}",
+  "models": "grok-4,grok-4-fast",
+  "provider": "custom",
+  "custom": {
+    "apiFormat": "openai-chat",
+    "auth": { "header": "Authorization", "format": "Bearer {key}" },
+    "endpoints": {
+      "chat_completions": "/v1/chat/completions"
+    },
+    "queryParams": {},
+    "extraHeaders": {},
+    "features": {
+      "vision": true,
+      "function_calling": true,
+      "structured_output": true,
+      "web_search": false,
+      "code_interpreter": false,
+      "responses_api": false,
+      "reasoning": true,
+      "streaming": false,
+      "embeddings": false,
+      "image_generation": false
+    },
+    "onUnsupportedFeature": "throw"
+  }
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `apiFormat` | yes | `openai-chat` (implemented), `openai-responses` (deferred to v1.22), `anthropic-messages` (deferred to v1.22) |
+| `auth.header` | yes | Header name, e.g. `Authorization`, `x-api-key`, `api-key` |
+| `auth.format` | no | Value template; `{key}` is substituted with `InstanceConfig.key`. If null, the key is sent verbatim |
+| `endpoints.<name>` | yes (≥1) | Logical endpoint → URL path. Recognized: `chat_completions`, `responses`, `embeddings`, `images_generations` |
+| `queryParams` | no | Appended verbatim to every request URL (e.g. `api-version`) |
+| `extraHeaders` | no | Sent on every request (e.g. `OpenAI-Organization`, `User-Agent`) |
+| `features.<name>` | no | Capability flags. Keys are case-insensitive and accept either `snake_case` or `camelCase` |
+| `onUnsupportedFeature` | no | `throw` (default), `warn`, `ignore` — see "lenient modes" below |
+
+#### Supported `apiFormat` values (v1.21.0)
+
+| Value | Status | Behavior |
+|-------|--------|----------|
+| `openai-chat` | **Implemented** | Builds OpenAI-compat chat/completions wire format. Covers Mistral, Grok, DeepSeek, Together, Groq, Ollama, OpenRouter, and any other OpenAI-compat endpoint. |
+| `openai-responses` | Deferred to v1.22 | Throws `UnsupportedOperationException` on first request. Workaround: use `openai-chat` if the provider also exposes chat/completions (most do). |
+| `anthropic-messages` | Deferred to v1.22 | Throws `UnsupportedOperationException` on first request. Workaround: use `provider: "anthropic"` or `provider: "azure-anthropic"` for Claude — they reuse the dedicated `ClaudeAdapter`. |
+
+#### Recognized `Feature` flags
+
+`vision`, `function_calling`, `structured_output`, `web_search`, `code_interpreter`, `responses_api`, `reasoning`, `streaming`, `embeddings`, `image_generation`. Unknown keys in JSON are silently ignored (forward-compat).
+
+#### Lenient modes (`onUnsupportedFeature`)
+
+| Mode | Behavior |
+|------|----------|
+| `throw` (default) | If an agent declares a feature (e.g. `webSearch=true`) the provider has not flagged supported, the library throws `UnsupportedFeatureException` (a subclass of `AgentException` with code `UNSUPPORTED_FEATURE`). The exception lists the requested feature and the set of supported ones. |
+| `warn` | Logs a SLF4J warning naming the instance, the unsupported feature, and the supported set, then proceeds. The library does NOT promise to strip the feature from the wire body — see the v1.22 TODO in `executeCustomRequest`. Today the request is still built with the agent's flags, so the provider may 4xx on the unknown tool/parameter. Use this mode when you want a soft failure surfaced in logs but the same wire request as `throw`. |
+| `ignore` | Same wire behavior as `warn`, but no log line. Use sparingly — debugging "why is my Grok call 400-ing?" is harder when the warning is gone. |
+
+Use `throw` in dev and CI; switch to `warn` in production behind a feature flag if you need to ship before the v1.22 strip-on-warn pass.
+
+#### Example: Grok via xAI (`openai-chat` direct)
+
+```json
+{
+  "id": "grok",
+  "url": "https://api.x.ai",
+  "key": "${XAI_API_KEY}",
+  "models": "grok-4,grok-4-fast,grok-code-fast",
+  "provider": "custom",
+  "custom": {
+    "apiFormat": "openai-chat",
+    "auth": { "header": "Authorization", "format": "Bearer {key}" },
+    "endpoints": { "chat_completions": "/v1/chat/completions" },
+    "features": {
+      "vision": true,
+      "function_calling": true,
+      "structured_output": true,
+      "reasoning": true,
+      "web_search": false,
+      "code_interpreter": false,
+      "embeddings": false,
+      "image_generation": false
+    },
+    "onUnsupportedFeature": "throw"
+  }
+}
+```
+
+#### Example: local Ollama (lenient mode)
+
+```json
+{
+  "id": "ollama-local",
+  "url": "http://localhost:11434",
+  "key": "ignored",
+  "models": "llama3.1:70b,qwen2.5-coder:32b",
+  "provider": "custom",
+  "custom": {
+    "apiFormat": "openai-chat",
+    "auth": { "header": "Authorization", "format": "Bearer {key}" },
+    "endpoints": { "chat_completions": "/v1/chat/completions" },
+    "features": {
+      "function_calling": true,
+      "structured_output": false,
+      "vision": false,
+      "web_search": false,
+      "code_interpreter": false
+    },
+    "onUnsupportedFeature": "warn"
+  }
+}
+```
+
+In this Ollama example, an agent with `resultClass="MyResult"` triggers a warning at request time (`structured_output=false`) instead of throwing, so a single agent definition can be reused across providers of varying capability.
 
 ## API Reference
 
@@ -1139,6 +1305,17 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 
 ## Changelog
+
+### v1.21.0
+- **New providers**: `mistral` (Mistral La Plateforme, OpenAI-compat chat/completions on `api.mistral.ai`) and `azure-mistral` (Mistral via Azure AI Foundry, served under `/models/chat/completions` with an `api-version` query param). Routing is automatic — `mistral-*`, `pixtral-*`, `codestral-*`, `magistral-*`, `ministral-*`, `open-mistral-*`, `open-mixtral-*` model names always go through the `MistralAdapter` chat/completions path. The `developer` role is rewritten to `system`; `magistral-*` reasoning models receive `prompt_mode: "reasoning"` automatically.
+- **New CUSTOM provider**: `provider: "custom"` reads endpoints, auth header, query params, extra headers and feature flags from a `custom` block in the instance JSON. Supported `apiFormat` in this release: `openai-chat` (covers Grok, DeepSeek, Together, Groq, Ollama, OpenRouter, ...). `openai-responses` and `anthropic-messages` are deferred to v1.22 (they throw `UnsupportedOperationException` with a clear pointer in the message).
+- **New**: `Feature` enum + `FeatureValidator` + `LenientMode` (THROW / WARN / IGNORE) — declared-capability checking for custom providers. `THROW` raises `UnsupportedFeatureException` (new subclass of `AgentException` with code `UNSUPPORTED_FEATURE`); `WARN` logs an SLF4J warning and proceeds; `IGNORE` silently proceeds.
+- **New**: `HttpHelper.postRawCustom(fullUrl, headers, body, timeoutMs)` — overload that accepts a fully-built URL and an explicit header map, used by `Provider.CUSTOM` (for which `ProviderConfig.getPath/getHeaders/getQueryParams` deliberately throw `UnsupportedOperationException`).
+- **New**: `Provider.MISTRAL`, `Provider.AZURE_MISTRAL`, `Provider.CUSTOM` enum values. Inserted before the deprecated `AZURE` constant so the ordinal of `AZURE` is preserved (no binary-breakage for code that switched on it).
+- **New**: `InstanceConfig.custom` (Jackson-bound `CustomProviderSpec`) + `isMistral()`, `isAzureMistral()`, `isCustom()` helpers + extended `validate()` accepting `mistral` / `azure-mistral` / `custom`. Custom instances must declare a non-null `custom` block; `azure-mistral` instances must declare an `apiVersion`.
+- **New**: `Instance.customSpec` field, propagated by `AgentService.parseInstances` and consumed by `UnifiedRequestService.executeCustomRequest`.
+- **Routing precedence in `UnifiedRequestService`**: `custom > anthropic > mistral > openai`, applied symmetrically in `executeRequestAgentWithImagesAfterPermit`, `executeRequestModelInternalAfterPermit`, and `executeRequestAfterPermit`. A `Provider.CUSTOM` instance short-circuits everything (no model-name sniffing).
+- **Docs**: README "Multi-Provider Support" section rewritten to cover all seven providers + the CUSTOM block schema, with concrete Grok and Ollama examples.
 
 ### v1.20.3
 - **New**: Mustache-style prompt variables in agent `instructions`. Any `{{name}}` placeholder in the system prompt is substituted at request time from a `Map<String, Object> promptVars` passed alongside the user message. New overloads on `AgentService`: `requestAgent(agentId, userMessage, promptVars)`, `requestAgent(agentId, userMessage, history, promptVars)`, `requestAgent(agentId, userMessage, conversationId, promptVars)`, `requestAgent(agentId, userMessage, conversationId, imagesBase64, promptVars)`, `requestAgent(agentId, userMessage, history, imagesBase64, promptVars)`, `requestAgent(agentId, userMessage, conversationId, toolExecutor, promptVars)` (autonomous), and `requestAgentVision(agentId, userMessage, imageBase64, promptVars)`. Variable names match `[a-zA-Z_][a-zA-Z0-9_]*` (no scoping like `{{user.name}}`); whitespace inside braces is tolerated (`{{ foo }}`). Substitution scans only the `instructions` template — `userMessage` and `history` are passed through untouched, so users may type `{{ ... }}` literally in chat content.
