@@ -1,0 +1,24 @@
+[
+  {
+    "id": "deepseek-main",
+    "url": "https://api.deepseek.com",
+    "key": "${DEEPSEEK_API_KEY}",
+    "models": "deepseek-chat,deepseek-reasoner",
+    "provider": "custom",
+    "enabled": true,
+    "custom": {
+      "apiFormat": "openai-chat",
+      "auth": { "header": "Authorization", "format": "Bearer {key}" },
+      "endpoints": {
+        "chat_completions": "/v1/chat/completions"
+      },
+      "features": {
+        "vision": false,
+        "function_calling": true,
+        "structured_output": true,
+        "reasoning": true
+      },
+      "onUnsupportedFeature": "warn"
+    }
+  }
+]

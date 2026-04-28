@@ -1,0 +1,23 @@
+[
+  {
+    "id": "groq-main",
+    "url": "https://api.groq.com",
+    "key": "${GROQ_API_KEY}",
+    "models": "llama-3.3-70b-versatile,llama-3.1-8b-instant,mixtral-8x7b-32768,deepseek-r1-distill-llama-70b",
+    "provider": "custom",
+    "enabled": true,
+    "custom": {
+      "apiFormat": "openai-chat",
+      "auth": { "header": "Authorization", "format": "Bearer {key}" },
+      "endpoints": {
+        "chat_completions": "/openai/v1/chat/completions"
+      },
+      "features": {
+        "vision": false,
+        "function_calling": true,
+        "structured_output": true
+      },
+      "onUnsupportedFeature": "warn"
+    }
+  }
+]
