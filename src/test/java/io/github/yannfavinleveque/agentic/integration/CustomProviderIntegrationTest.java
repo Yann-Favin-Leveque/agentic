@@ -14,6 +14,7 @@ import io.github.yannfavinleveque.agentic.agent.custom.FeatureValidator;
 import io.github.yannfavinleveque.agentic.agent.exception.AgentException;
 import io.github.yannfavinleveque.agentic.agent.exception.UnsupportedFeatureException;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
+import io.github.yannfavinleveque.agentic.agent.model.FunctionConfig;
 import io.github.yannfavinleveque.agentic.agent.model.Message;
 import io.github.yannfavinleveque.agentic.agent.service.AgentManager;
 import io.github.yannfavinleveque.agentic.agent.service.ClaudeAdapter;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,10 +96,13 @@ class CustomProviderIntegrationTest {
                     });
         }
 
-        // Reply with a minimal OpenAI-compat chat/completions response
+        // Reply with a minimal OpenAI-compat chat/completions response.
+        // Content is a JSON-shaped string so it can be deserialized either as a plain
+        // string (DefaultResult) or as MathResult (when an agent declares
+        // resultClass=MathResult to exercise structured-output tests).
         Map<String, Object> message = new HashMap<>();
         message.put("role", "assistant");
-        message.put("content", "stubbed reply");
+        message.put("content", "{\"expression\":\"1+1\",\"result\":2,\"explanation\":\"stubbed reply\"}");
 
         Map<String, Object> choice = new HashMap<>();
         choice.put("index", 0);
@@ -194,15 +199,45 @@ class CustomProviderIntegrationTest {
     }
 
     /**
-     * Helper to invoke the package-private routing entry point. Because
-     * {@link UnifiedRequestService#requestAgent(Agent, String, List)} requires an agent
-     * registered in {@link AgentManager}, we instead call the lower-level
+     * Helper to invoke the package-private routing entry point via the lower-level
      * {@code requestModel(model, message)} which uses {@code instanceRouter} directly and
      * exercises the same {@code custom > anthropic > mistral > openai} branch via
-     * {@code executeRequestModelInternalAfterPermit}.
+     * {@code executeRequestModelInternalAfterPermit}. This path does not carry agent
+     * functions / resultClass / reasoningEffort — for those, see {@link #callAgent}.
      */
     private AgentResult callModel(UnifiedRequestService svc, String message) throws Exception {
         return svc.requestModel("stub-model-1", message).get();
+    }
+
+    /**
+     * Invokes the routing path with a pre-built {@link Agent} (no AgentManager registration
+     * needed). Used by the lenient-body-strip tests where the agent must carry functions,
+     * a {@code resultClass} or a {@code reasoningEffort} so that the request body would
+     * normally include {@code tools} / {@code response_format} / {@code reasoning_effort}.
+     */
+    private AgentResult callAgent(UnifiedRequestService svc, Agent agent) throws Exception {
+        return svc.requestAgent(agent, "Hello custom!", (List<Message>) null).get();
+    }
+
+    /**
+     * Builds a sample function so the agent declares {@code function_calling}.
+     * Inline {@code parameters} avoid needing a parameter class on the test classpath.
+     */
+    private FunctionConfig sampleFunction() {
+        Map<String, Object> schema = new HashMap<>();
+        schema.put("type", "object");
+        Map<String, Object> props = new HashMap<>();
+        Map<String, Object> loc = new HashMap<>();
+        loc.put("type", "string");
+        loc.put("description", "City name");
+        props.put("location", loc);
+        schema.put("properties", props);
+        schema.put("required", Collections.singletonList("location"));
+        return FunctionConfig.builder()
+                .name("get_weather")
+                .description("Get the weather for a location")
+                .parameters(schema)
+                .build();
     }
 
     // ---------- Tests ----------
@@ -398,5 +433,285 @@ class CustomProviderIntegrationTest {
                 ((AgentException) cause).getErrorCode());
         assertTrue(cause.getMessage().contains("anthropic-messages"),
                 "Error message should mention deferred apiFormat: " + cause.getMessage());
+    }
+
+    // ==========================================================================
+    // Lenient body-strip tests (1.21.1).
+    //
+    // Goal: assert that WARN/IGNORE not only log/silence the unsupported feature,
+    // but actually REMOVE it from the JSON body that hits the wire. Tests capture
+    // the inbound HTTP request via the stub server and inspect captured.body.
+    // ==========================================================================
+
+    /**
+     * Captures everything slf4j-simple writes to {@link System#err} during the
+     * supplied {@link Runnable}. slf4j-simple is the only logging backend on the
+     * test classpath; it formats every log line to stderr. Restoring the original
+     * stream is done in a finally block.
+     */
+    private String captureStderr(ThrowingRunnable r) throws Exception {
+        java.io.PrintStream original = System.err;
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        try (java.io.PrintStream tee = new java.io.PrintStream(buf, true, java.nio.charset.StandardCharsets.UTF_8)) {
+            System.setErr(tee);
+            try {
+                r.run();
+            } finally {
+                System.setErr(original);
+            }
+        }
+        return buf.toString(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    @Test
+    @DisplayName("4.1 WARN mode: function_calling unsupported -> tools STRIPPED from body, warning logged")
+    void warnStripsFunctionCalling() throws Exception {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("function_calling", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("warn")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("strip-fn-warn")
+                .name("StripFnWarn")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .functions(Collections.singletonList(sampleFunction()))
+                .responseTimeout(15_000L)
+                .build();
+
+        String stderr = captureStderr(() -> {
+            AgentResult result = callAgent(svc, agent);
+            assertNotNull(result, "request should still complete (WARN does not abort)");
+        });
+
+        assertNotNull(captured.body, "request must have been sent (WARN proceeds)");
+        assertFalse(captured.body.containsKey("tools"),
+                "WARN mode must strip 'tools' from the outgoing body. Body keys: " + captured.body.keySet());
+        assertTrue(stderr.contains("FUNCTION_CALLING"),
+                "WARN mode must log the unsupported feature name (FUNCTION_CALLING). Captured stderr: " + stderr);
+        assertTrue(stderr.contains("WARN"),
+                "Log level should be WARN. Captured stderr: " + stderr);
+    }
+
+    @Test
+    @DisplayName("4.2 IGNORE mode: function_calling unsupported -> tools STRIPPED, NO log line")
+    void ignoreStripsFunctionCalling() throws Exception {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("function_calling", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("ignore")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("strip-fn-ignore")
+                .name("StripFnIgnore")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .functions(Collections.singletonList(sampleFunction()))
+                .responseTimeout(15_000L)
+                .build();
+
+        String stderr = captureStderr(() -> {
+            AgentResult result = callAgent(svc, agent);
+            assertNotNull(result);
+        });
+
+        assertNotNull(captured.body, "request must have been sent (IGNORE proceeds)");
+        assertFalse(captured.body.containsKey("tools"),
+                "IGNORE mode must strip 'tools' from the outgoing body. Body keys: " + captured.body.keySet());
+        assertFalse(stderr.contains("does not support feature 'FUNCTION_CALLING'"),
+                "IGNORE mode must NOT emit the FeatureValidator warning. Captured stderr: " + stderr);
+    }
+
+    @Test
+    @DisplayName("4.3 WARN mode: structured_output unsupported -> response_format STRIPPED, warning logged")
+    void warnStripsResponseFormat() throws Exception {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("structured_output", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("warn")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("strip-rf-warn")
+                .name("StripRfWarn")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .resultClass("io.github.yannfavinleveque.agentic.integration.model.MathResult")
+                .responseTimeout(15_000L)
+                .build();
+
+        String stderr = captureStderr(() -> {
+            AgentResult result = callAgent(svc, agent);
+            assertNotNull(result);
+        });
+
+        assertNotNull(captured.body, "request must have been sent");
+        assertFalse(captured.body.containsKey("response_format"),
+                "WARN mode must strip 'response_format' from the outgoing body. Body keys: " + captured.body.keySet());
+        assertTrue(stderr.contains("STRUCTURED_OUTPUT"),
+                "WARN mode must log the unsupported feature name (STRUCTURED_OUTPUT). Captured stderr: " + stderr);
+    }
+
+    @Test
+    @DisplayName("4.4 IGNORE mode: structured_output unsupported -> response_format STRIPPED, no log")
+    void ignoreStripsResponseFormat() throws Exception {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("structured_output", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("ignore")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("strip-rf-ignore")
+                .name("StripRfIgnore")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .resultClass("io.github.yannfavinleveque.agentic.integration.model.MathResult")
+                .responseTimeout(15_000L)
+                .build();
+
+        String stderr = captureStderr(() -> {
+            AgentResult result = callAgent(svc, agent);
+            assertNotNull(result);
+        });
+
+        assertNotNull(captured.body);
+        assertFalse(captured.body.containsKey("response_format"),
+                "IGNORE mode must strip 'response_format' from the outgoing body. Body keys: " + captured.body.keySet());
+        assertFalse(stderr.contains("does not support feature 'STRUCTURED_OUTPUT'"),
+                "IGNORE mode must NOT emit the FeatureValidator warning. Captured stderr: " + stderr);
+    }
+
+    @Test
+    @DisplayName("4.5 WARN mode: reasoning unsupported -> reasoning_effort STRIPPED, warning logged")
+    void warnStripsReasoning() throws Exception {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("reasoning", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("warn")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("strip-reason-warn")
+                .name("StripReasonWarn")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .reasoningEffort("high")
+                .responseTimeout(15_000L)
+                .build();
+
+        String stderr = captureStderr(() -> {
+            AgentResult result = callAgent(svc, agent);
+            assertNotNull(result);
+        });
+
+        assertNotNull(captured.body);
+        assertFalse(captured.body.containsKey("reasoning_effort"),
+                "WARN mode must strip 'reasoning_effort' from the outgoing body. Body keys: " + captured.body.keySet());
+        assertFalse(captured.body.containsKey("prompt_mode"),
+                "WARN mode must also strip 'prompt_mode' (Mistral-style) from the outgoing body. Body keys: " + captured.body.keySet());
+        assertTrue(stderr.contains("REASONING"),
+                "WARN mode must log the unsupported feature name (REASONING). Captured stderr: " + stderr);
+    }
+
+    @Test
+    @DisplayName("4.6 Sanity: when all features are supported, body carries tools + response_format + reasoning_effort")
+    void allFeaturesAllowedBodyFull() throws Exception {
+        // Default baseSpec() declares everything (incl. reasoning) as supported.
+        CustomProviderSpec spec = baseSpec()
+                .onUnsupportedFeature("throw") // strict mode: nothing should trigger anyway
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("full-body")
+                .name("FullBody")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .functions(Collections.singletonList(sampleFunction()))
+                .resultClass("io.github.yannfavinleveque.agentic.integration.model.MathResult")
+                .reasoningEffort("medium")
+                .responseTimeout(15_000L)
+                .build();
+
+        AgentResult result = callAgent(svc, agent);
+        assertNotNull(result);
+        assertNotNull(captured.body);
+        assertTrue(captured.body.containsKey("tools"),
+                "Body must include 'tools' when FUNCTION_CALLING is supported. Body keys: " + captured.body.keySet());
+        assertTrue(captured.body.containsKey("response_format"),
+                "Body must include 'response_format' when STRUCTURED_OUTPUT is supported. Body keys: " + captured.body.keySet());
+        assertEquals("medium", captured.body.get("reasoning_effort"),
+                "Body must include 'reasoning_effort' verbatim when REASONING is supported");
+    }
+
+    @Test
+    @DisplayName("4.7 Sanity: THROW mode still aborts BEFORE any HTTP call (no body captured)")
+    void throwModeStillAbortsBeforeHttp() {
+        Map<String, Boolean> features = allFeaturesTrue();
+        features.put("function_calling", false);
+        CustomProviderSpec spec = baseSpec()
+                .features(features)
+                .onUnsupportedFeature("throw")
+                .build();
+        Instance instance = customInstance(spec);
+        UnifiedRequestService svc = buildService(instance);
+
+        Agent agent = Agent.builder()
+                .id("throw-no-http")
+                .name("ThrowNoHttp")
+                .model("stub-model-1")
+                .instructions("You are a stub.")
+                .temperature(0.0)
+                .maxTokens(64)
+                .functions(Collections.singletonList(sampleFunction()))
+                .responseTimeout(15_000L)
+                .build();
+
+        // Call must fail with UnsupportedFeatureException BEFORE any HTTP call.
+        ExecutionException ee = assertThrows(ExecutionException.class, () -> callAgent(svc, agent));
+        Throwable cause = ee.getCause();
+        assertTrue(cause instanceof UnsupportedFeatureException,
+                "Expected UnsupportedFeatureException, got: " + cause);
+        // No request reached the stub server.
+        // (captured is reset @BeforeEach so captured.body is the as-handled body, null if no call.)
+        assertEquals(null, captured.body,
+                "THROW mode must not send any HTTP request, captured.body should be null");
     }
 }

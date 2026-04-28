@@ -826,23 +826,23 @@ public class UnifiedRequestService {
         }
 
         // 1. Validate features required by the agent against the spec.
+        // The returned set is the *sanitized* feature set that body builders should honor:
+        //  - THROW: the call above already threw, we never reach the body builders.
+        //  - WARN : the unsupported feature has been logged AND removed from `allowed`
+        //           => the body builders must not emit it.
+        //  - IGNORE: same drop, no log.
+        EnumSet<Feature> allowed;
         EnumSet<Feature> requested = collectRequestedFeatures(agent);
         try {
-            FeatureValidator.validate(instance.getId(), spec, requested);
+            allowed = FeatureValidator.validate(instance.getId(), spec, requested);
         } catch (RuntimeException re) {
             return CompletableFuture.failedFuture(re);
         }
-        // Note: the returned EnumSet is currently not used to mutate the agent — request body
-        // builders always inspect the agent flags directly. Any unsupported feature was either
-        // already thrown above (THROW) or logged/ignored (WARN/IGNORE). The corresponding feature
-        // is then naturally absent from the wire body because the lenient validator did not
-        // promise to emit it. TODO(v1.22): re-evaluate features at body-build time so WARN/IGNORE
-        // can also strip e.g. function tool definitions when the provider doesn't support them.
 
         String fmt = spec.getApiFormat() == null ? "" : spec.getApiFormat().toLowerCase();
         switch (fmt) {
             case "openai-chat":
-                return executeCustomOpenAIChatRequest(agent, messagesWithUser, instance, spec);
+                return executeCustomOpenAIChatRequest(agent, messagesWithUser, instance, spec, allowed);
             case "openai-responses":
                 // TODO(v1.22): implement openai-responses for CUSTOM. Most non-OpenAI providers
                 // do not expose Responses API anyway, so this is intentionally deferred.
@@ -876,9 +876,16 @@ public class UnifiedRequestService {
      *
      * <p>Covers Mistral (when wired manually), Grok (xAI), DeepSeek, Together, Groq, Ollama,
      * and any other OpenAI-compatible chat/completions endpoint.</p>
+     *
+     * <p>The {@code allowed} set is the sanitized feature set returned by {@link FeatureValidator}:
+     * any feature the agent requested but the provider does not declare as supported has already
+     * been removed (and logged in {@code WARN} mode). Body builders below MUST gate inclusion of
+     * tools, response_format and reasoning_effort on this set so that {@code WARN}/{@code IGNORE}
+     * actually strip the unsupported feature from the outgoing HTTP body — not just from the log.</p>
      */
     private CompletableFuture<ParsedResponse> executeCustomOpenAIChatRequest(
-            Agent agent, List<Message> messagesWithUser, Instance instance, CustomProviderSpec spec) {
+            Agent agent, List<Message> messagesWithUser, Instance instance, CustomProviderSpec spec,
+            EnumSet<Feature> allowed) {
 
         // 1. Build messages (same shape as Mistral / OpenAI Chat Completions)
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -901,17 +908,28 @@ public class UnifiedRequestService {
         }
         body.put("max_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 4096);
 
-        if (spec.supports(Feature.FUNCTION_CALLING)) {
+        // FUNCTION_CALLING -> "tools" : only emit when the validator left it in `allowed`.
+        if (allowed != null && allowed.contains(Feature.FUNCTION_CALLING)) {
             List<Map<String, Object>> tools = buildChatCompletionsTools(agent);
             if (tools != null && !tools.isEmpty()) {
                 body.put("tools", tools);
             }
         }
-        if (spec.supports(Feature.STRUCTURED_OUTPUT)) {
+        // STRUCTURED_OUTPUT -> "response_format" : same gating.
+        if (allowed != null && allowed.contains(Feature.STRUCTURED_OUTPUT)) {
             Map<String, Object> rf = buildChatCompletionsResponseFormat(agent);
             if (rf != null) {
                 body.put("response_format", rf);
             }
+        }
+        // REASONING -> "reasoning_effort" : only emit when allowed AND the agent declared it.
+        // The custom executor does not (yet) emit Mistral-Magistral's "prompt_mode"; that path
+        // lives in MistralAdapter and is exercised by Provider.MISTRAL, not Provider.CUSTOM.
+        if (allowed != null && allowed.contains(Feature.REASONING)
+                && agent.getReasoningEffort() != null
+                && !agent.getReasoningEffort().isBlank()
+                && !"none".equalsIgnoreCase(agent.getReasoningEffort())) {
+            body.put("reasoning_effort", agent.getReasoningEffort());
         }
 
         // 3. Resolve URL: baseUrl + spec endpoint path + spec query params
