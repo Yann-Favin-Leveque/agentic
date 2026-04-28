@@ -1,6 +1,7 @@
 package io.github.yannfavinleveque.agentic.agent.custom;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.github.yannfavinleveque.agentic.common.ModelPricing;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -100,6 +101,30 @@ public class CustomProviderSpec {
     @JsonProperty("onUnsupportedFeature")
     private String onUnsupportedFeature;
 
+    /**
+     * Optional per-model pricing for the provider's models. Each entry maps a
+     * model name (or prefix) to {@link ModelPricing.PriceEntry input/output prices per 1M tokens}.
+     *
+     * <p>When set, lookup order at runtime:</p>
+     * <ol>
+     *   <li>Static {@link ModelPricing} table (covers OpenAI/Anthropic/Mistral/Grok/DeepSeek/Gemini).</li>
+     *   <li>This map if no static match.</li>
+     *   <li>If still no match, {@code estimatedCostUsd} on TokenUsage stays {@code null} -
+     *       no error, the request still succeeds.</li>
+     * </ol>
+     *
+     * <p>JSON example:</p>
+     * <pre>{@code
+     * "modelPricing": {
+     *   "my-private-llm-v2":      { "input": 1.50, "output": 5.00 },
+     *   "my-private-llm-v2-mini": { "input": 0.20, "output": 0.80 }
+     * }
+     * }</pre>
+     */
+    @JsonProperty("modelPricing")
+    @Builder.Default
+    private Map<String, ModelPricing.PriceEntry> modelPricing = new HashMap<>();
+
     // ------------------------------------------------------------------
     // Convenience accessors
     // ------------------------------------------------------------------
@@ -151,6 +176,11 @@ public class CustomProviderSpec {
     /** Read-only view of extra headers (never null). */
     public Map<String, String> getExtraHeadersView() {
         return extraHeaders == null ? Collections.emptyMap() : Collections.unmodifiableMap(extraHeaders);
+    }
+
+    /** Read-only view of declared model pricing (never null). */
+    public Map<String, ModelPricing.PriceEntry> getModelPricingView() {
+        return modelPricing == null ? Collections.emptyMap() : Collections.unmodifiableMap(modelPricing);
     }
 
     /**
