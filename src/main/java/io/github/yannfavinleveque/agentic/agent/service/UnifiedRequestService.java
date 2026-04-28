@@ -389,7 +389,7 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        // Routing order: custom > anthropic > mistral > openai
+        // Routing order: custom > anthropic > mistral > grok > deepseek > gemini > openai
         if (instance.getProvider() == Provider.CUSTOM) {
             requestFuture = executeCustomRequest(agent, messagesWithUser, instance);
         } else if (ProviderConfig.isAnthropicModel(agent.getModel())) {
@@ -398,6 +398,16 @@ public class UnifiedRequestService {
                 || instance.getProvider() == Provider.MISTRAL
                 || instance.getProvider() == Provider.AZURE_MISTRAL) {
             requestFuture = executeMistralRequest(agent, messagesWithUser, instance);
+        } else if (GrokAdapter.isGrokModel(agent.getModel())
+                || instance.getProvider() == Provider.GROK
+                || instance.getProvider() == Provider.AZURE_GROK) {
+            requestFuture = executeGrokRequest(agent, messagesWithUser, instance);
+        } else if (DeepSeekAdapter.isDeepSeekModel(agent.getModel())
+                || instance.getProvider() == Provider.DEEPSEEK) {
+            requestFuture = executeDeepSeekRequest(agent, messagesWithUser, instance);
+        } else if (GeminiAdapter.isGeminiModel(agent.getModel())
+                || instance.getProvider() == Provider.GEMINI) {
+            requestFuture = executeGeminiRequest(agent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequestWithImages(agent, messagesWithUser, instance);
         }
@@ -532,27 +542,40 @@ public class UnifiedRequestService {
      */
     private CompletableFuture<ParsedResponse> executeMistralRequest(
             Agent agent, List<Message> messagesWithUser, Instance instance) {
+        return executeChatCompletionsCompatRequest(
+                agent, messagesWithUser, instance,
+                MistralAdapter::buildRequestBody,
+                json -> extractChatCompletionsContentParsed(json, instance));
+    }
+
+    /**
+     * Executes a Chat Completions stateless request via any OpenAI-compatible
+     * provider (Mistral, Grok, DeepSeek, Gemini). Differences between providers
+     * are encapsulated by the {@code bodyBuilder} function and the
+     * {@code responseParser} for response-side specifics (e.g., DeepSeek's
+     * {@code reasoning_content} extraction).
+     */
+    private CompletableFuture<ParsedResponse> executeChatCompletionsCompatRequest(
+            Agent agent,
+            List<Message> messagesWithUser,
+            Instance instance,
+            BodyBuilder bodyBuilder,
+            java.util.function.Function<String, ParsedResponse> responseParser) {
 
         List<Map<String, Object>> messages = new ArrayList<>();
-
-        // Prepend system instructions (Mistral takes them as a regular system message).
         if (agent.getInstructions() != null && !agent.getInstructions().isEmpty()) {
             Map<String, Object> sys = new HashMap<>();
             sys.put("role", "system");
             sys.put("content", agent.getInstructions());
             messages.add(sys);
         }
-
         for (Message msg : messagesWithUser) {
             messages.addAll(buildChatCompletionsMessages(msg));
         }
-
-        // Tools (no web_search / code_interpreter — Mistral doesn't have native versions).
         List<Map<String, Object>> tools = buildChatCompletionsTools(agent);
-
         Map<String, Object> responseFormat = buildChatCompletionsResponseFormat(agent);
 
-        Map<String, Object> body = MistralAdapter.buildRequestBody(agent, messages, tools, responseFormat);
+        Map<String, Object> body = bodyBuilder.build(agent, messages, tools, responseFormat);
 
         return httpHelper.postRaw(
                 instance,
@@ -560,7 +583,91 @@ public class UnifiedRequestService {
                 agent.getModel(),
                 body,
                 agent.getResponseTimeout())
-                .thenApply(json -> extractChatCompletionsContentParsed(json, instance));
+                .thenApply(responseParser);
+    }
+
+    /**
+     * Functional interface used by {@link #executeChatCompletionsCompatRequest} to delegate
+     * provider-specific body construction to a static adapter method (e.g.
+     * {@link MistralAdapter#buildRequestBody}).
+     */
+    @FunctionalInterface
+    private interface BodyBuilder {
+        Map<String, Object> build(Agent agent,
+                                  List<Map<String, Object>> messages,
+                                  List<Map<String, Object>> tools,
+                                  Map<String, Object> responseFormat);
+    }
+
+    private CompletableFuture<ParsedResponse> executeGrokRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance) {
+        return executeChatCompletionsCompatRequest(
+                agent, messagesWithUser, instance,
+                GrokAdapter::buildRequestBody,
+                json -> extractChatCompletionsContentParsed(json, instance));
+    }
+
+    private CompletableFuture<ParsedResponse> executeDeepSeekRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance) {
+        return executeChatCompletionsCompatRequest(
+                agent, messagesWithUser, instance,
+                DeepSeekAdapter::buildRequestBody,
+                json -> extractChatCompletionsContentWithReasoning(json, instance));
+    }
+
+    private CompletableFuture<ParsedResponse> executeGeminiRequest(
+            Agent agent, List<Message> messagesWithUser, Instance instance) {
+        return executeChatCompletionsCompatRequest(
+                agent, messagesWithUser, instance,
+                GeminiAdapter::buildRequestBody,
+                json -> extractChatCompletionsContentParsed(json, instance));
+    }
+
+    /**
+     * Like {@link #extractChatCompletionsContentParsed} but also extracts DeepSeek's
+     * non-standard {@code reasoning_content} field and prepends it to the parsed text
+     * as a section, so callers see the chain-of-thought.
+     *
+     * <p>If {@code reasoning_content} is missing, the behavior matches
+     * {@link #extractChatCompletionsContentParsed} exactly.</p>
+     *
+     * <p>The chain-of-thought is wrapped in {@code [REASONING]\n...\n[/REASONING]\n\n}
+     * markers so callers who only want the final answer can split on the closing tag.
+     * The reasoning is therefore visible by default but trivially strippable.</p>
+     */
+    @SuppressWarnings("unchecked")
+    ParsedResponse extractChatCompletionsContentWithReasoning(String jsonResponse, Instance instance) {
+        ParsedResponse base = extractChatCompletionsContentParsed(jsonResponse, instance);
+
+        // Try to recover reasoning_content from the assistant message.
+        String reasoning = null;
+        try {
+            Map<String, Object> response = objectMapper.readValue(jsonResponse,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                    });
+            Object choices = response.get("choices");
+            if (choices instanceof List && !((List<?>) choices).isEmpty()) {
+                Object first = ((List<?>) choices).get(0);
+                if (first instanceof Map) {
+                    Object msg = ((Map<?, ?>) first).get("message");
+                    if (msg instanceof Map) {
+                        Map<String, Object> messageMap = (Map<String, Object>) msg;
+                        reasoning = DeepSeekAdapter.extractReasoningContent(messageMap);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to extract DeepSeek reasoning_content: {}", e.getMessage());
+        }
+
+        if (reasoning == null || reasoning.isEmpty()) {
+            return base;
+        }
+
+        String existing = base.getTextContent() == null ? "" : base.getTextContent();
+        String combined = "[REASONING]\n" + reasoning + "\n[/REASONING]\n\n" + existing;
+
+        return ParsedResponse.of(combined, base.getFunctionCalls(), base.getTokenUsage());
     }
 
     /**
@@ -1286,7 +1393,7 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        // Routing order: custom > anthropic > mistral > openai
+        // Routing order: custom > anthropic > mistral > grok > deepseek > gemini > openai
         if (instance.getProvider() == Provider.CUSTOM) {
             requestFuture = executeCustomRequest(tempAgent, messagesWithUser, instance);
         } else if (ProviderConfig.isAnthropicModel(tempAgent.getModel())) {
@@ -1295,6 +1402,16 @@ public class UnifiedRequestService {
                 || instance.getProvider() == Provider.MISTRAL
                 || instance.getProvider() == Provider.AZURE_MISTRAL) {
             requestFuture = executeMistralRequest(tempAgent, messagesWithUser, instance);
+        } else if (GrokAdapter.isGrokModel(tempAgent.getModel())
+                || instance.getProvider() == Provider.GROK
+                || instance.getProvider() == Provider.AZURE_GROK) {
+            requestFuture = executeGrokRequest(tempAgent, messagesWithUser, instance);
+        } else if (DeepSeekAdapter.isDeepSeekModel(tempAgent.getModel())
+                || instance.getProvider() == Provider.DEEPSEEK) {
+            requestFuture = executeDeepSeekRequest(tempAgent, messagesWithUser, instance);
+        } else if (GeminiAdapter.isGeminiModel(tempAgent.getModel())
+                || instance.getProvider() == Provider.GEMINI) {
+            requestFuture = executeGeminiRequest(tempAgent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequestModelInternal(tempAgent, messagesWithUser, options, instance);
         }
@@ -1540,7 +1657,7 @@ public class UnifiedRequestService {
 
         CompletableFuture<ParsedResponse> requestFuture;
 
-        // Routing order: custom > anthropic > mistral > openai
+        // Routing order: custom > anthropic > mistral > grok > deepseek > gemini > openai
         if (instance.getProvider() == Provider.CUSTOM) {
             // Build a synthetic message list (history + current user) and route via the
             // multimodal-aware path which is fine for plain text too.
@@ -1565,6 +1682,37 @@ public class UnifiedRequestService {
                 messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
             }
             requestFuture = executeMistralRequest(agent, messagesWithUser, instance);
+        } else if (GrokAdapter.isGrokModel(agent.getModel())
+                || instance.getProvider() == Provider.GROK
+                || instance.getProvider() == Provider.AZURE_GROK) {
+            List<Message> messagesWithUser = new ArrayList<>();
+            if (history != null) {
+                messagesWithUser.addAll(history);
+            }
+            if (userMessage != null) {
+                messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
+            }
+            requestFuture = executeGrokRequest(agent, messagesWithUser, instance);
+        } else if (DeepSeekAdapter.isDeepSeekModel(agent.getModel())
+                || instance.getProvider() == Provider.DEEPSEEK) {
+            List<Message> messagesWithUser = new ArrayList<>();
+            if (history != null) {
+                messagesWithUser.addAll(history);
+            }
+            if (userMessage != null) {
+                messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
+            }
+            requestFuture = executeDeepSeekRequest(agent, messagesWithUser, instance);
+        } else if (GeminiAdapter.isGeminiModel(agent.getModel())
+                || instance.getProvider() == Provider.GEMINI) {
+            List<Message> messagesWithUser = new ArrayList<>();
+            if (history != null) {
+                messagesWithUser.addAll(history);
+            }
+            if (userMessage != null) {
+                messagesWithUser.add(Message.builder().role("user").content(userMessage).build());
+            }
+            requestFuture = executeGeminiRequest(agent, messagesWithUser, instance);
         } else {
             requestFuture = executeOpenAIRequest(agent, userMessage, history, instance);
         }

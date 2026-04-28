@@ -51,6 +51,34 @@ public enum Provider {
     CUSTOM,
 
     /**
+     * xAI Grok (api.x.ai). OpenAI-compatible /v1/chat/completions endpoint.
+     * Models: grok-4, grok-3-mini, grok-2-vision-1212, grok-code-fast-1, ...
+     */
+    GROK,
+
+    /**
+     * Grok via Azure AI Foundry (*.services.ai.azure.com).
+     * OpenAI-compatible Chat Completions on /models/chat/completions
+     * with api-version query parameter and api-key header.
+     */
+    AZURE_GROK,
+
+    /**
+     * DeepSeek (api.deepseek.com). OpenAI-compatible /v1/chat/completions endpoint.
+     * Models: deepseek-chat, deepseek-reasoner.
+     * Note: deepseek-reasoner returns a 'reasoning_content' field separate from 'content'.
+     */
+    DEEPSEEK,
+
+    /**
+     * Google Gemini via the OpenAI-compat shim
+     * (generativelanguage.googleapis.com/v1beta/openai/chat/completions).
+     * Models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, ...
+     * Vertex AI (OAuth2) is not supported — use Provider.CUSTOM if needed.
+     */
+    GEMINI,
+
+    /**
      * Legacy: Alias for AZURE_OPENAI (backward compatibility)
      * Use AZURE_OPENAI or AZURE_ANTHROPIC instead
      */

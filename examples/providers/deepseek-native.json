@@ -1,0 +1,15 @@
+[
+  {
+    "id": "deepseek-main",
+    "url": "https://api.deepseek.com",
+    "key": "${DEEPSEEK_API_KEY}",
+    "models": "deepseek-chat,deepseek-reasoner",
+    "provider": "deepseek",
+    "enabled": true,
+    "rateLimits": {
+      "deepseek-chat": 30,
+      "deepseek-reasoner": 5,
+      "*": 10
+    }
+  }
+]
