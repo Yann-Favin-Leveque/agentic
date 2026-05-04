@@ -202,6 +202,20 @@ Set the `LLM_INSTANCES` environment variable with your provider configurations:
     "provider": "azure-anthropic",
     "apiVersion": "2023-06-01",
     "enabled": true
+  },
+  {
+    "id": "azure-multi-model",
+    "url": "https://my-prod-instance.openai.azure.com",
+    "key": "azure-key",
+    "models": "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano",
+    "provider": "azure-openai",
+    "apiVersion": "2024-08-01-preview",
+    "enabled": true,
+    "rateLimits": {
+      "gpt-5.4": 40,
+      "gpt-5.4-mini": 40,
+      "gpt-5.4-nano": 50
+    }
   }
 ]
 ```
@@ -214,20 +228,25 @@ Set the `LLM_INSTANCES` environment variable with your provider configurations:
 | `url` | Yes | Base URL of the API endpoint |
 | `key` | Yes | API Key for authentication |
 | `models` | Yes | Comma-separated list of deployed models |
-| `provider` | Yes | Provider type: `openai`, `azure-openai`, `anthropic`, or `azure-anthropic` |
+| `provider` | Yes | Provider type: `openai`, `azure-openai`, `anthropic`, `azure-anthropic`, `mistral`, `azure-mistral`, `grok`, `azure-grok`, `deepseek`, `gemini`, or `custom` (see [Custom Provider](#custom-provider)) |
 | `apiVersion` | Azure only | API version (required for Azure providers) |
 | `enabled` | No | Whether instance should be loaded (default: `true`) |
+| `rateLimits` | No | Per-model rate limits in requests/second, as a `{ "model-name": rps }` map. Each model uses its own dedicated rate limiter on this instance. Models not listed fall back to the global `requestsPerSecond` (see below). |
+| `custom` | Custom only | Provider spec (`CustomProviderSpec`) — required when `provider` is `custom`. See [Custom Provider](#custom-provider). |
 
 ### Configuration Options
 
 ```java
 AgentServiceConfig config = AgentServiceConfig.builder()
     .instancesJson(instancesJson)              // Required: JSON string with instances
-    .requestsPerSecond(5)                      // Rate limit per instance (default: 5)
+    .requestsPerSecond(5)                      // Global fallback rate limit per instance (default: 5)
+                                               // Overridden per-model by InstanceConfig.rateLimits
     .maxRetries(3)                             // Max retry attempts (default: 3)
     .defaultResponseTimeout(120000L)           // Timeout in ms (default: 120000)
     .build();
 ```
+
+> **Note on rate limiting.** `requestsPerSecond` is a global fallback applied to every instance/model that doesn't have an explicit `rateLimits` entry. In production, you'll typically set `rateLimits` per-model on each instance (e.g. Azure's gpt-5.4 caps differ from gpt-4o), so the library can saturate each model independently without one slow model starving the others.
 
 ### Spring Boot Integration
 
