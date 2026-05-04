@@ -1,21 +1,25 @@
 # Agentic-Helper
 
-A Java library for multi-provider AI orchestration. Out of the box: OpenAI, Azure OpenAI, Anthropic/Claude, Azure Anthropic, Mistral, Azure Mistral, xAI Grok, Azure Grok, DeepSeek, Google Gemini — plus a JSON-driven `Provider.CUSTOM` for any other OpenAI-compatible endpoint.
+A Java library for production LLM apps — **build workflows or autonomous agents** behind a single high-level API. Out of the box: OpenAI, Azure OpenAI, Anthropic/Claude, Azure Anthropic, Mistral, Azure Mistral, xAI Grok, Azure Grok, DeepSeek, Google Gemini — plus a JSON-driven `Provider.CUSTOM` for any other OpenAI-compatible endpoint.
 
-High-level `AgentService` with rate limiting, retries, structured outputs, and per-provider feature gating.
+`AgentService` exposes the same primitive (`requestAgent` / `requestModel`) for both paradigms:
+- **Workflows** — chain LLM calls with system prompts and structured outputs, your code orchestrates the steps.
+- **Autonomous agents** — let the model run multi-step tool loops, deciding its own trajectory until the task ends.
+
+Multi-instance load-balancing, per-model rate limiting, error-type-aware retries, and per-provider feature gating come built-in.
 
 ## Credits
 
 This project was originally forked from [simple-openai](https://github.com/sashirestela/simple-openai) by [Sashir Estela](https://github.com/sashirestela).
 
 **Agentic-Helper** adds:
-- `AgentService` for high-level agent orchestration
+- A unified `AgentService` for both **workflow steps** (single LLM call with system prompt + structured output) and **autonomous agents** (multi-step tool loops)
 - **11 built-in providers** + a JSON-spec `Provider.CUSTOM` for anything else
-- JSON-based instance configuration with per-instance rate limiting
-- Automatic retries with exponential backoff
+- JSON-based instance configuration with **per-model rate limiting** per instance
+- **Error-type-aware retries** (rate-limit, content-filter, timeout, server-error treated differently) with exponential backoff
 - Structured outputs with typed results (JSON Schema)
 - Stateless API on top of OpenAI Responses API + Anthropic Messages API + Chat Completions
-- **Autonomous Agent Mode** — agents run multi-step tool loops independently
+- **Autonomous Agent Mode** — agents run multi-step tool loops independently, with context compaction
 - Web search, code interpreter, and function calling tools
 - Vision (multimodal) support, image generation (DALL-E), embeddings
 - Reasoning models support (o-series, Magistral, Grok-3-mini/4, DeepSeek-reasoner, Gemini-2.5-thinking)
