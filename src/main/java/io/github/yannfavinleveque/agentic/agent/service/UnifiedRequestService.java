@@ -2220,19 +2220,25 @@ public class UnifiedRequestService {
         RetryConfig effectiveConfig = agentRetryConfig != null ? agentRetryConfig : new RetryConfig();
         RetryConfig globalDefault = config.getDefaultRetryConfig();
 
-        // Content-filter 400s: retry up to contentFilterRetries times. The
-        // intent is to round-robin to a different LLM instance — Azure regions
-        // have varying responsible-AI strictness, and a prompt that trips one
-        // endpoint may be accepted by another. Capped so a genuinely
-        // unsafe prompt does not waste tokens across all instances.
+        // Content-filter 400s: retry across LLM instances. Empirically the Azure
+        // responsible-AI filter is stochastic per request — the same prompt against
+        // the same instance can pass on a later attempt — so the default is to
+        // walk every compatible instance once before giving up. Set
+        // contentFilterRetries to 0 to preserve the legacy "fail immediately on
+        // content filter" behaviour, or to a positive integer to cap below the
+        // "all instances" default.
         if (message.contains("content_filter") || message.contains("content filter")) {
             int configured = effectiveConfig.resolveContentFilterRetries(globalDefault);
-            if (configured <= 0) return -1;
-            // Cap at the number of compatible instances minus one (since we already
-            // burned one attempt), so we walk every endpoint at most once.
+            if (configured == 0) return -1;
             int compatible = countCompatibleInstances(agent);
             if (compatible <= 1) return -1;
-            return Math.min(configured, compatible - 1);
+            // Cap at "every endpoint once" (compatible - 1, since the first attempt
+            // already burned one instance).
+            int allInstancesCap = compatible - 1;
+            if (configured == RetryConfig.DEFAULT_CONTENT_FILTER_RETRIES_USE_ALL_INSTANCES) {
+                return allInstancesCap;
+            }
+            return Math.min(configured, allInstancesCap);
         }
         // Other 4xx errors (except 429 rate limit) are deterministic — never retry.
         if ((message.contains("400") || message.contains("401") || message.contains("403"))

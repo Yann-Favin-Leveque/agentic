@@ -47,13 +47,16 @@ public class RetryConfig {
     public static final int DEFAULT_DESERIALIZATION_RETRIES = 1;
     public static final int DEFAULT_MAX_ITERATION_RETRIES = 1;
     /**
-     * Default retries for content-filter 400 errors. Set to a small positive
-     * value so the round-robin can try a different LLM instance — Azure regions
-     * have varying filter strictness, and a prompt that trips one endpoint may
-     * be accepted by another. Capped to avoid wasting tokens when the prompt
-     * itself is the problem.
+     * Sentinel meaning "use every compatible LLM instance once". When neither
+     * the agent-level config nor the global default sets {@code contentFilterRetries},
+     * the runtime walks through every configured-and-compatible instance — i.e.
+     * the effective retry count is {@code compatibleInstances - 1} (the first
+     * attempt is not a retry). Empirically the Azure responsible-AI filter is
+     * stochastic per request rather than purely instance-bound, so retrying
+     * across all instances is the safest default. Set an explicit positive
+     * integer in the config to cap below that.
      */
-    public static final int DEFAULT_CONTENT_FILTER_RETRIES = 3;
+    public static final int DEFAULT_CONTENT_FILTER_RETRIES_USE_ALL_INSTANCES = -1;
 
     /**
      * Retries for network/infrastructure errors (429 rate limit, 502, timeout, 5xx).
@@ -141,10 +144,12 @@ public class RetryConfig {
 
     /**
      * Resolves the effective retry count for content-filter errors, falling back through the chain.
+     * Returns {@link #DEFAULT_CONTENT_FILTER_RETRIES_USE_ALL_INSTANCES} ({@code -1}) when no level
+     * sets a value — call sites interpret that sentinel as "walk every compatible instance once".
      */
     public int resolveContentFilterRetries(RetryConfig globalDefault) {
         if (contentFilterRetries != null) return contentFilterRetries;
         if (globalDefault != null && globalDefault.getContentFilterRetries() != null) return globalDefault.getContentFilterRetries();
-        return DEFAULT_CONTENT_FILTER_RETRIES;
+        return DEFAULT_CONTENT_FILTER_RETRIES_USE_ALL_INSTANCES;
     }
 }
