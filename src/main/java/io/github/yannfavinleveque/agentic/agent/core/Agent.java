@@ -135,6 +135,27 @@ public class Agent {
     private Boolean codeInterpreter = false;
 
     /**
+     * Optional tool-choice hint sent to the model alongside the tools list.
+     * <p>
+     * Accepted values:
+     * <ul>
+     *   <li>{@code null} or {@code "auto"} → model decides (Anthropic/OpenAI default).</li>
+     *   <li>{@code "any"} → model MUST call SOME tool (any from the list).
+     *       Useful for verifier/dispatcher agents that should never reply in plain text.
+     *       Without this, some models (notably Claude Haiku 4.5 via Azure Anthropic) tend
+     *       to inline the tool-call as JSON/XML in the text response when the system prompt
+     *       is verification-shaped — see agentwm Stop-hook for a real-world repro.</li>
+     *   <li>{@code "none"} → tools are exposed in context but model must NOT call any.</li>
+     *   <li>{@code "tool:<name>"} → forces a specific tool, e.g. {@code "tool:submit_verdict"}.</li>
+     * </ul>
+     * Mapped per-provider in the adapters:
+     *   Claude → {"type": "auto"|"any"|"none"} or {"type": "tool", "name": "..."}.
+     *   OpenAI → "auto"|"required"|"none" or {"type":"function","function":{"name":"..."}}.
+     *   Mistral / others → currently ignored (no-op).
+     */
+    private String toolChoice;
+
+    /**
      * Custom functions that can be called by the agent. Each function maps to a Java class that
      * implements the function logic.
      */

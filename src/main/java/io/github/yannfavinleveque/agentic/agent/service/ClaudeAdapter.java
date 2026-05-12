@@ -75,7 +75,7 @@ public class ClaudeAdapter {
             Double temperature, Integer maxTokens,
             Class<?> resultClass) {
         return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, null,
-                null);
+                null, null);
     }
 
     /**
@@ -99,11 +99,26 @@ public class ClaudeAdapter {
             Class<?> resultClass,
             List<ClaudeRequest.ClaudeTool> tools) {
         return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens, resultClass, tools,
-                null);
+                null, null);
     }
 
     /**
      * Calls Claude API with tools and reasoning support - FULLY ASYNC.
+     * Backwards-compatible overload — delegates with {@code toolChoice = null}.
+     */
+    public java.util.concurrent.CompletableFuture<ClaudeResponse> callClaudeAsync(
+            Instance instance, String model, String systemPrompt,
+            List<ClaudeRequest.ClaudeMessage> messages,
+            Double temperature, Integer maxTokens,
+            Class<?> resultClass,
+            List<ClaudeRequest.ClaudeTool> tools,
+            String reasoningEffort) {
+        return callClaudeAsync(instance, model, systemPrompt, messages, temperature, maxTokens,
+                resultClass, tools, reasoningEffort, null);
+    }
+
+    /**
+     * Calls Claude API with tools, reasoning, and tool-choice support - FULLY ASYNC.
      *
      * @param instance        Instance to call
      * @param model           Model name
@@ -115,6 +130,9 @@ public class ClaudeAdapter {
      * @param tools           List of tools available to the model (optional)
      * @param reasoningEffort Reasoning effort: null/"none" = disabled, "enabled"/"low"/"medium"/"high"
      *                        = enable thinking
+     * @param toolChoice      Tool-choice hint, see {@link io.github.yannfavinleveque.agentic.agent.core.Agent#getToolChoice()}.
+     *                        null/"auto"/"none"/"any"/"tool:<name>". Mapped to Claude's
+     *                        {@code tool_choice} object payload below.
      * @return CompletableFuture with Claude response
      */
     public java.util.concurrent.CompletableFuture<ClaudeResponse> callClaudeAsync(
@@ -123,7 +141,8 @@ public class ClaudeAdapter {
             Double temperature, Integer maxTokens,
             Class<?> resultClass,
             List<ClaudeRequest.ClaudeTool> tools,
-            String reasoningEffort) {
+            String reasoningEffort,
+            String toolChoice) {
 
         int resolvedMaxTokens = maxTokens != null ? maxTokens : 32768;
 
@@ -200,6 +219,30 @@ public class ClaudeAdapter {
             }
             requestBuilder.tools(toolsToSend);
             logger.debug("Added {} tools to Claude request (cacheable={})", toolsToSend.size(), cacheable);
+
+            // Tool-choice mapping. Anthropic accepts:
+            //   {"type":"auto"}                          (default — model decides)
+            //   {"type":"any"}                           (model MUST call SOME tool)
+            //   {"type":"tool", "name":"<name>"}         (model MUST call this exact tool)
+            //   {"type":"none"}                          (model must NOT call any tool)
+            // Only emit when explicitly requested (null → omit field → Anthropic default = auto).
+            // This is the cure for "model emits the tool-call as inline JSON/XML in the text
+            // response" — observed with Haiku-4-5 via Azure on verification-shaped prompts.
+            if (toolChoice != null && !toolChoice.isBlank()) {
+                String tc = toolChoice.trim().toLowerCase();
+                Map<String, Object> tcMap;
+                if (tc.startsWith("tool:")) {
+                    String name = toolChoice.substring("tool:".length()).trim();
+                    tcMap = Map.of("type", "tool", "name", name);
+                } else if ("any".equals(tc) || "none".equals(tc) || "auto".equals(tc)) {
+                    tcMap = Map.of("type", tc);
+                } else {
+                    logger.warn("Unknown toolChoice='{}' — falling back to auto", toolChoice);
+                    tcMap = Map.of("type", "auto");
+                }
+                requestBuilder.toolChoice(tcMap);
+                logger.debug("Set Claude tool_choice={} (model={})", tcMap, model);
+            }
         }
 
         // Add output format for structured outputs

@@ -6,7 +6,7 @@
 
     <groupId>io.github.yann-favin-leveque</groupId>
     <artifactId>agentic-helper</artifactId>
-    <version>1.27.0</version>
+    <version>1.28.0</version>
   <packaging>jar</packaging>
 
   <name>agentic-helper</name>
@@ -172,7 +172,7 @@
             <configuration>
               <publishingServerId>central</publishingServerId>
               <autoPublish>true</autoPublish>
-              <waitUntil>published</waitUntil>
+              <waitUntil>validated</waitUntil>
             </configuration>
           </plugin>
         </plugins>

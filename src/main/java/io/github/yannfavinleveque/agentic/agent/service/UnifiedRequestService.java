@@ -520,7 +520,8 @@ public class UnifiedRequestService {
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768,
                 resultClass,
                 tools,
-                agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
+                agent.getReasoningEffort(),
+                agent.getToolChoice()).thenApply(resp -> parseClaudeResponse(resp, instance));
     }
 
     // ==================== MISTRAL CHAT COMPLETIONS ====================
@@ -2105,7 +2106,8 @@ public class UnifiedRequestService {
                 agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768,
                 resultClass,
                 tools,
-                agent.getReasoningEffort()).thenApply(resp -> parseClaudeResponse(resp, instance));
+                agent.getReasoningEffort(),
+                agent.getToolChoice()).thenApply(resp -> parseClaudeResponse(resp, instance));
     }
 
     // ==================== RESPONSE HANDLING ====================
