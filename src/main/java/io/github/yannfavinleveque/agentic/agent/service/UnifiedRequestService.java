@@ -832,12 +832,23 @@ public class UnifiedRequestService {
      * to the static {@link ModelPricing} table only.
      */
     private TokenUsage calculatePricing(String model, Integer in, Integer out, Instance instance) {
+        return calculatePricing(model, in, out, null, null, instance);
+    }
+
+    /**
+     * Cache-aware variant of {@link #calculatePricing(String, Integer, Integer, Instance)}.
+     * Pass {@code null} for {@code cacheCreate} / {@code cacheRead} when the provider does
+     * not report cache statistics — the pricing layer then prices cache tokens at zero
+     * (no double-counting against input).
+     */
+    private TokenUsage calculatePricing(String model, Integer in, Integer out,
+            Integer cacheCreate, Integer cacheRead, Instance instance) {
         Map<String, ModelPricing.PriceEntry> fallback = null;
         if (instance != null && instance.getProvider() == Provider.CUSTOM
                 && instance.getCustomSpec() != null) {
             fallback = instance.getCustomSpec().getModelPricing();
         }
-        return ModelPricing.calculate(model, in, out, fallback);
+        return ModelPricing.calculate(model, in, out, cacheCreate, cacheRead, fallback);
     }
 
     private ParsedResponse extractChatCompletionsContentParsed(String jsonResponse, Instance instance) {
@@ -912,8 +923,23 @@ public class UnifiedRequestService {
                         ? ((Number) usageMap.get("prompt_tokens")).intValue() : null;
                 Integer completionTokens = usageMap.get("completion_tokens") instanceof Number
                         ? ((Number) usageMap.get("completion_tokens")).intValue() : null;
+                // OpenAI-compat providers: prompt_tokens INCLUDES cached tokens. Subtract
+                // to get the uncached portion that should be priced at the input rate;
+                // cached_tokens are then priced at the (much cheaper) cache-read rate.
+                Integer cached = null;
+                Object details = usageMap.get("prompt_tokens_details");
+                if (details instanceof Map) {
+                    Object c = ((Map<?, ?>) details).get("cached_tokens");
+                    if (c instanceof Number) {
+                        cached = ((Number) c).intValue();
+                    }
+                }
+                Integer uncached = promptTokens;
+                if (promptTokens != null && cached != null) {
+                    uncached = Math.max(0, promptTokens - cached);
+                }
                 String model = (String) response.get("model");
-                tokenUsage = calculatePricing(model, promptTokens, completionTokens, instance);
+                tokenUsage = calculatePricing(model, uncached, completionTokens, null, cached, instance);
             }
 
             if (!functionCalls.isEmpty()) {
@@ -1175,13 +1201,18 @@ public class UnifiedRequestService {
             }
         }
 
-        // Extract token usage and estimated cost
+        // Extract token usage and estimated cost — Anthropic surfaces uncached input,
+        // cache writes, and cache reads in three separate fields. Forward all three so
+        // the pricing layer can apply the discounted cache-read rate (~0.10x input)
+        // and the cache-write premium (~1.25x input).
         TokenUsage tokenUsage = null;
         if (response.getUsage() != null) {
             tokenUsage = calculatePricing(
                     response.getModel(),
                     response.getUsage().getInputTokens(),
                     response.getUsage().getOutputTokens(),
+                    response.getUsage().getCacheCreationInputTokens(),
+                    response.getUsage().getCacheReadInputTokens(),
                     instance);
         }
 
@@ -1937,7 +1968,10 @@ public class UnifiedRequestService {
                 }
             }
 
-            // Extract token usage and estimated cost
+            // Extract token usage and estimated cost. OpenAI Responses API surfaces
+            // cached prompt tokens in usage.input_tokens_details.cached_tokens, and
+            // (like Chat Completions) usage.input_tokens INCLUDES cached tokens — so
+            // we subtract `cached` to avoid double-counting at the input rate.
             TokenUsage tokenUsage = null;
             Map<String, Object> usageMap = (Map<String, Object>) response.get("usage");
             if (usageMap != null) {
@@ -1945,8 +1979,20 @@ public class UnifiedRequestService {
                         ? ((Number) usageMap.get("input_tokens")).intValue() : null;
                 Integer outputTokens = usageMap.get("output_tokens") instanceof Number
                         ? ((Number) usageMap.get("output_tokens")).intValue() : null;
+                Integer cached = null;
+                Object details = usageMap.get("input_tokens_details");
+                if (details instanceof Map) {
+                    Object c = ((Map<?, ?>) details).get("cached_tokens");
+                    if (c instanceof Number) {
+                        cached = ((Number) c).intValue();
+                    }
+                }
+                Integer uncached = inputTokens;
+                if (inputTokens != null && cached != null) {
+                    uncached = Math.max(0, inputTokens - cached);
+                }
                 tokenUsage = calculatePricing(
-                        (String) response.get("model"), inputTokens, outputTokens, instance);
+                        (String) response.get("model"), uncached, outputTokens, null, cached, instance);
             }
 
             // If we have function calls, return them (with or without text)
@@ -2647,12 +2693,24 @@ public class UnifiedRequestService {
 
         String response = chatResponse.getChoices().get(0).getMessage().getContent();
 
-        // LOG RESPONSE END with usage
+        // LOG RESPONSE END with usage — OpenAI's prompt_tokens INCLUDES cached tokens,
+        // so subtract to isolate the uncached portion (priced at the input rate)
+        // from the cache-read portion (priced at the cache-read rate, ~10x cheaper).
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (chatResponse.getUsage() != null) {
+            Integer cached = null;
+            if (chatResponse.getUsage().getPromptTokensDetails() != null) {
+                cached = chatResponse.getUsage().getPromptTokensDetails().getCachedTokens();
+            }
+            Integer promptTokens = chatResponse.getUsage().getPromptTokens();
+            Integer uncached = promptTokens;
+            if (promptTokens != null && cached != null) {
+                uncached = Math.max(0, promptTokens - cached);
+            }
             TokenUsage tokenUsage = calculatePricing(model,
-                    chatResponse.getUsage().getPromptTokens(),
+                    uncached,
                     chatResponse.getUsage().getCompletionTokens(),
+                    null, cached,
                     instance);
             logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
@@ -2679,12 +2737,15 @@ public class UnifiedRequestService {
 
         String response = claudeResponse.getTextContent();
 
-        // LOG RESPONSE END with usage
+        // LOG RESPONSE END with usage — Anthropic surfaces cache writes/reads in
+        // separate fields; input_tokens is already the uncached portion.
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (claudeResponse.getUsage() != null) {
             TokenUsage tokenUsage = calculatePricing(model,
                     claudeResponse.getUsage().getInputTokens(),
                     claudeResponse.getUsage().getOutputTokens(),
+                    claudeResponse.getUsage().getCacheCreationInputTokens(),
+                    claudeResponse.getUsage().getCacheReadInputTokens(),
                     instance);
             logger.info("<- CHAT END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());
@@ -2714,12 +2775,15 @@ public class UnifiedRequestService {
 
         String response = claudeResponse.getTextContent();
 
-        // LOG RESPONSE END with usage
+        // LOG RESPONSE END with usage — Anthropic cache stats are split across
+        // input_tokens (uncached) / cache_creation_input_tokens / cache_read_input_tokens.
         String responsePreview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
         if (claudeResponse.getUsage() != null) {
             TokenUsage tokenUsage = calculatePricing(model,
                     claudeResponse.getUsage().getInputTokens(),
                     claudeResponse.getUsage().getOutputTokens(),
+                    claudeResponse.getUsage().getCacheCreationInputTokens(),
+                    claudeResponse.getUsage().getCacheReadInputTokens(),
                     instance);
             logger.info("<- CHAT STRUCTURED END | {} | Response: {} | Model: {} | Instance: {}",
                     ModelPricing.formatForLog(tokenUsage), responsePreview, model, instance.getId());

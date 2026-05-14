@@ -105,14 +105,21 @@ public class ClaudeResponse {
     }
 
     /**
-     * Token usage statistics
+     * Token usage statistics.
+     *
+     * <p>Anthropic reports cached prompt tokens separately from {@code input_tokens}.
+     * {@code input_tokens} contains ONLY the uncached portion of the prompt; cache hits
+     * are surfaced via {@code cache_read_input_tokens} and writes via
+     * {@code cache_creation_input_tokens}. Both fields are absent (and parsed as
+     * {@code null}) on responses for models / providers that do not support prompt
+     * caching.</p>
      */
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Usage {
 
         /**
-         * Number of input tokens
+         * Number of uncached input tokens (Anthropic semantics).
          */
         @JsonProperty("input_tokens")
         private Integer inputTokens;
@@ -122,6 +129,20 @@ public class ClaudeResponse {
          */
         @JsonProperty("output_tokens")
         private Integer outputTokens;
+
+        /**
+         * Tokens written into the prompt cache on this request (Anthropic).
+         * {@code null} when the field is absent from the API response.
+         */
+        @JsonProperty("cache_creation_input_tokens")
+        private Integer cacheCreationInputTokens;
+
+        /**
+         * Tokens served from the prompt cache on this request (Anthropic).
+         * {@code null} when the field is absent from the API response.
+         */
+        @JsonProperty("cache_read_input_tokens")
+        private Integer cacheReadInputTokens;
     }
 
     /**

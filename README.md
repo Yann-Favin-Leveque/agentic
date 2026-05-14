@@ -1380,6 +1380,41 @@ Pricing is in USD per 1M tokens. Lookup tries the library's static table first
 (OpenAI / Anthropic / Mistral / Grok / DeepSeek / Gemini), then your `modelPricing`
 (longest-prefix match), then gives up gracefully (`estimatedCostUsd=null`).
 
+## Prompt Caching
+
+agentic-helper parses and prices prompt-cache statistics returned by providers
+that support caching:
+
+- **Anthropic / Azure-Anthropic** — `cache_control` is set automatically on the
+  system prompt by `ClaudeAdapter` for every Claude call (4.x family). When the
+  Anthropic API reports `cache_creation_input_tokens` / `cache_read_input_tokens`,
+  they are extracted and surfaced on `TokenUsage` as `cacheCreationTokens` /
+  `cacheReadTokens`. Cache writes are priced at 1.25× the input rate, cache reads
+  at 0.10× the input rate (per Anthropic's published pricing).
+- **OpenAI / Azure-OpenAI** — `usage.prompt_tokens_details.cached_tokens` (Chat
+  Completions) and `usage.input_tokens_details.cached_tokens` (Responses API)
+  are extracted. Because OpenAI's `prompt_tokens` *includes* cached tokens, the
+  library subtracts the cached portion before pricing so the uncached portion
+  is billed at the input rate and the cached portion is billed at the cache-read
+  rate (0.10× input). Cache writes are not billed separately by OpenAI.
+- **Mistral / DeepSeek / Gemini / Grok / Custom** — cache statistics, if any, are
+  preserved on `TokenUsage` but priced at zero. Add cache rates to those entries
+  in `ModelPricing` when those providers' cache pricing is wired in.
+
+```java
+AgentResult result = agentService.requestAgent("my-agent", "Hello").join();
+TokenUsage usage = result.getUsage();
+System.out.printf("input=%d output=%d cacheCreate=%s cacheRead=%s cost=$%.6f%n",
+    usage.getInputTokens(), usage.getOutputTokens(),
+    usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
+    usage.getEstimatedCostUsd());
+```
+
+`ModelPricing.calculate(model, in, out, cacheCreate, cacheRead)` is the public
+entry point if you need to price tokens yourself; the legacy
+`calculate(model, in, out)` overload is retained as a bridge (cache args
+defaulted to `null`).
+
 ## API Reference
 
 ### AgentService Methods
@@ -1444,6 +1479,13 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [CleverClient](https://github.com/sashirestela/cleverclient) - HTTP client library
 
 ## Changelog
+
+### v1.29.0
+- **Cache token parsing**: `ClaudeResponse$Usage` now parses `cache_creation_input_tokens` and `cache_read_input_tokens` (Anthropic). The OpenAI Chat / Responses parsers extract `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` and subtract the cached count from `prompt_tokens` / `input_tokens` before pricing — previously OpenAI cached tokens were billed at the full input rate (a measurable overestimate on long prompts).
+- **`TokenUsage`** gains `cacheCreationTokens` + `cacheReadTokens`. `accumulate()` sums them across turns.
+- **`ModelPricing`** is now 4-rate-per-model (`input`, `output`, `cacheCreate`, `cacheRead`). New cache-aware overloads `calculate(model, in, out, cacheCreate, cacheRead)` and `calculate(model, in, out, cacheCreate, cacheRead, fallback)`. Legacy 3- and 4-arg overloads are kept as bridges (binary compat preserved). Anthropic 4.x: `cacheCreate = 1.25×input`, `cacheRead = 0.10×input`. OpenAI: `cacheCreate = 0` (not billed separately), `cacheRead = 0.10×input`. Mistral / DeepSeek / Gemini / Grok / Custom: cache rates at 0 until those providers' cache pricing is surfaced.
+- **`UnifiedRequestService.calculatePricing`** gains a cache-aware overload; all 6 internal call sites now forward cache token counts so accounting is correct for every paradigm (Anthropic native, OpenAI Responses, OpenAI Chat, OpenAI-compat shim, embeddings).
+- **`ModelPricing.formatForLog`** appends `(cc=… cr=…)` when cache tokens are non-zero; otherwise log lines are unchanged for backwards readability.
 
 ### v1.23.0
 - **4 new native providers**: `grok` (xAI on `api.x.ai`), `azure-grok` (Grok on Azure AI Foundry), `deepseek` (`api.deepseek.com`), and `gemini` (Google via the OpenAI-compat shim at `generativelanguage.googleapis.com/v1beta/openai/...`). All four use the OpenAI Chat Completions stateless wire format, joining Mistral on the same code path.
