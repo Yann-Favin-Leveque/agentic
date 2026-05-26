@@ -15,6 +15,7 @@ import io.github.yannfavinleveque.agentic.agent.exception.ContentFilterException
 import io.github.yannfavinleveque.agentic.agent.exception.RateLimitException;
 import io.github.yannfavinleveque.agentic.agent.exception.RequestTimeoutException;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
+import io.github.yannfavinleveque.agentic.agent.model.CacheableSegment;
 import io.github.yannfavinleveque.agentic.agent.model.ClaudeRequest;
 import io.github.yannfavinleveque.agentic.agent.model.ClaudeResponse;
 import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
@@ -244,7 +245,7 @@ public class UnifiedRequestService {
      */
     public CompletableFuture<AgentResult> requestAgent(String agentId, String userMessage, List<Message> history) {
         Agent agent = agentManager.getAgent(agentId);
-        return attemptRequestWithRetry(agent, userMessage, history, 0);
+        return attemptRequestWithRetry(agent, segmentsOf(userMessage), history, 0);
     }
 
     /**
@@ -259,7 +260,49 @@ public class UnifiedRequestService {
      * @return CompletableFuture with the agent's response
      */
     public CompletableFuture<AgentResult> requestAgent(Agent agent, String userMessage, List<Message> history) {
-        return attemptRequestWithRetry(agent, userMessage, history, 0);
+        return attemptRequestWithRetry(agent, segmentsOf(userMessage), history, 0);
+    }
+
+    /**
+     * Segment-aware variant of {@link #requestAgent(Agent, String, List)}. Instead of a single
+     * user-message string, the caller supplies an ordered list of {@link CacheableSegment}s for the
+     * current user turn. Anthropic providers turn each segment into a {@code text} content block and
+     * place a {@code cache_control} marker at every requested boundary (respecting Anthropic's
+     * 4-breakpoint cap); all other providers concatenate the segments in order into a single user
+     * message (their caching is automatic on a stable prefix, or unsupported). History handling is
+     * unchanged.
+     *
+     * @param agent        Resolved agent
+     * @param userSegments Ordered segments for the current user turn (must be non-null/non-empty)
+     * @param history      Previous conversation messages (can be null or empty)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(Agent agent, List<CacheableSegment> userSegments,
+            List<Message> history) {
+        return attemptRequestWithRetry(agent, userSegments, history, 0);
+    }
+
+    /**
+     * Segment-aware variant resolving the agent by id. See
+     * {@link #requestAgent(Agent, List, List)}.
+     */
+    public CompletableFuture<AgentResult> requestAgentSegments(String agentId,
+            List<CacheableSegment> userSegments, List<Message> history) {
+        Agent agent = agentManager.getAgent(agentId);
+        return attemptRequestWithRetry(agent, userSegments, history, 0);
+    }
+
+    /**
+     * Wraps a (possibly null) plain user message string into a single non-boundary
+     * {@link CacheableSegment}. A {@code null} message → {@code null} segment list (the autonomous
+     * loop sends {@code userMessage == null} on follow-up iterations, which must stay null so no
+     * extra user message is appended).
+     */
+    private static List<CacheableSegment> segmentsOf(String userMessage) {
+        if (userMessage == null) {
+            return null;
+        }
+        return List.of(new CacheableSegment(userMessage, false));
     }
 
     /**
@@ -1628,9 +1671,9 @@ public class UnifiedRequestService {
     // ==================== INTERNAL FLOW ====================
 
     private CompletableFuture<AgentResult> attemptRequestWithRetry(
-            Agent agent, String userMessage, List<Message> history, int attempt) {
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history, int attempt) {
 
-        return executeRequest(agent, userMessage, history, attempt)
+        return executeRequest(agent, userSegments, history, attempt)
                 .thenCompose(parsed -> deserializeResponse(agent, parsed))
                 .handle((result, error) -> {
                     if (error == null) {
@@ -1650,13 +1693,13 @@ public class UnifiedRequestService {
                             cause instanceof AgentException ? ((AgentException) cause).getErrorCode() : "UNKNOWN");
 
                     return delayAsync(delay)
-                            .thenCompose(v -> attemptRequestWithRetry(agent, userMessage, history, attempt + 1));
+                            .thenCompose(v -> attemptRequestWithRetry(agent, userSegments, history, attempt + 1));
                 })
                 .thenCompose(f -> f);
     }
 
     private CompletableFuture<ParsedResponse> executeRequest(
-            Agent agent, String userMessage, List<Message> history, int attempt) {
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history, int attempt) {
 
         if (instanceRouter.isDegradedMode()) {
             return CompletableFuture.failedFuture(
@@ -1672,16 +1715,18 @@ public class UnifiedRequestService {
             long rateDelay = limiter.acquireRateSlot();
             if (rateDelay > 0) {
                 return delayAsync(rateDelay)
-                        .thenCompose(v2 -> executeRequestAfterPermit(agent, userMessage, history, instance, limiter));
+                        .thenCompose(v2 -> executeRequestAfterPermit(agent, userSegments, history, instance, limiter));
             }
-            return executeRequestAfterPermit(agent, userMessage, history, instance, limiter);
+            return executeRequestAfterPermit(agent, userSegments, history, instance, limiter);
         });
     }
 
     private CompletableFuture<ParsedResponse> executeRequestAfterPermit(
-            Agent agent, String userMessage, List<Message> history,
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history,
             Instance instance, InstanceLimiter limiter) {
 
+        // For non-Anthropic providers and logging, the segments collapse to a single string.
+        String userMessage = (userSegments == null) ? null : ClaudeAdapter.concatSegments(userSegments);
         String msgPreview = userMessage != null && userMessage.length() > 200
                 ? userMessage.substring(0, 200) + "..." : userMessage;
         logger.info("→ REQUEST START [V2] | Agent: {} | Model: {} | Instance: {} | Input: {}",
@@ -1702,7 +1747,7 @@ public class UnifiedRequestService {
             }
             requestFuture = executeCustomRequest(agent, messagesWithUser, instance);
         } else if (ProviderConfig.isAnthropicModel(agent.getModel())) {
-            requestFuture = executeClaudeRequest(agent, userMessage, history, instance);
+            requestFuture = executeClaudeRequest(agent, userSegments, history, instance);
         } else if (MistralAdapter.isMistralModel(agent.getModel())
                 || instance.getProvider() == Provider.MISTRAL
                 || instance.getProvider() == Provider.AZURE_MISTRAL) {
@@ -2108,7 +2153,7 @@ public class UnifiedRequestService {
     }
 
     private CompletableFuture<ParsedResponse> executeClaudeRequest(
-            Agent agent, String userMessage, List<Message> history, Instance instance) {
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history, Instance instance) {
 
         // Build messages
         List<ClaudeRequest.ClaudeMessage> messages = new ArrayList<>();
@@ -2119,11 +2164,15 @@ public class UnifiedRequestService {
                 }
             }
         }
-        // Add current user message (null on subsequent autonomous loop iterations)
-        if (userMessage != null) {
+        // Add current user turn (null/empty on subsequent autonomous loop iterations).
+        // Each segment becomes a text content block; cache_control markers are placed at the
+        // requested boundaries by ClaudeAdapter.buildUserContentBlocks (respecting the 4-breakpoint
+        // cap). A single non-boundary segment degrades to one plain text block — equivalent to the
+        // previous single-string user message, but expressed as a content-block array.
+        if (userSegments != null && !userSegments.isEmpty()) {
             messages.add(ClaudeRequest.ClaudeMessage.builder()
                     .role("user")
-                    .content(userMessage)
+                    .contentBlocks(ClaudeAdapter.buildUserContentBlocks(userSegments))
                     .build());
         }
 

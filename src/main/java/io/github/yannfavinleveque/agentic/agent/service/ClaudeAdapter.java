@@ -6,6 +6,7 @@ import io.github.yannfavinleveque.agentic.agent.core.ProviderConfig;
 import io.github.yannfavinleveque.agentic.agent.exception.AgentException;
 import io.github.yannfavinleveque.agentic.agent.exception.ContentFilterException;
 import io.github.yannfavinleveque.agentic.agent.exception.RateLimitException;
+import io.github.yannfavinleveque.agentic.agent.model.CacheableSegment;
 import io.github.yannfavinleveque.agentic.agent.model.ClaudeRequest;
 import io.github.yannfavinleveque.agentic.agent.model.ClaudeResponse;
 import io.github.yannfavinleveque.agentic.common.ResponseFormat;
@@ -320,6 +321,94 @@ public class ClaudeAdapter {
             }
         }
         return null;
+    }
+
+    /**
+     * Maximum number of {@code cache_control} breakpoints Anthropic allows on a single request.
+     * The system prompt and the tools array each consume one when cacheable
+     * (see {@link #callClaudeAsync}), leaving {@value #MAX_USER_CACHE_BREAKPOINTS} for the user
+     * turn. We therefore cap the number of honored user-turn boundaries at that value, keeping the
+     * <em>last</em> ones (the boundaries closest to the volatile tail give the longest-lived prefix).
+     */
+    static final int MAX_TOTAL_CACHE_BREAKPOINTS = 4;
+
+    /**
+     * Breakpoints reserved for the user turn after system + tools each took one.
+     */
+    static final int MAX_USER_CACHE_BREAKPOINTS = 2;
+
+    /**
+     * Turns an ordered list of {@link CacheableSegment}s into the {@code content} blocks of a single
+     * Anthropic user message. Each segment becomes a {@code text} block; a
+     * {@code cache_control: {type: "ephemeral"}} marker is placed on the block of every segment whose
+     * {@link CacheableSegment#cacheBoundary()} is {@code true}.
+     * <p>
+     * Anthropic caps the total number of {@code cache_control} markers per request at
+     * {@link #MAX_TOTAL_CACHE_BREAKPOINTS}; with system + tools typically taking one each, only
+     * {@link #MAX_USER_CACHE_BREAKPOINTS} remain for the user turn. If the caller requests more
+     * boundaries than that, only the <em>last</em> {@link #MAX_USER_CACHE_BREAKPOINTS} are honored
+     * (longest-lived prefix wins) and a warning is logged. Empty segments are preserved as empty
+     * text blocks so the boundary they carry is not lost.
+     *
+     * @param segments ordered user-turn segments (must be non-null and non-empty)
+     * @return content blocks for {@link ClaudeRequest.ClaudeMessage#getContentBlocks()}
+     */
+    static List<ClaudeRequest.ClaudeContentBlock> buildUserContentBlocks(List<CacheableSegment> segments) {
+        if (segments == null || segments.isEmpty()) {
+            throw new IllegalArgumentException("segments must not be null or empty");
+        }
+
+        // Indices of segments that request a boundary, in order.
+        List<Integer> boundaryIndices = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            if (segments.get(i).cacheBoundary()) {
+                boundaryIndices.add(i);
+            }
+        }
+
+        // Keep only the last MAX_USER_CACHE_BREAKPOINTS boundaries.
+        java.util.Set<Integer> honored = new java.util.HashSet<>();
+        int keepFrom = Math.max(0, boundaryIndices.size() - MAX_USER_CACHE_BREAKPOINTS);
+        for (int i = keepFrom; i < boundaryIndices.size(); i++) {
+            honored.add(boundaryIndices.get(i));
+        }
+        if (boundaryIndices.size() > MAX_USER_CACHE_BREAKPOINTS) {
+            logger.warn("User turn requested {} cache boundaries but Anthropic allows only {} after "
+                    + "system+tools; keeping the last {} and dropping the earlier {}.",
+                    boundaryIndices.size(), MAX_USER_CACHE_BREAKPOINTS, MAX_USER_CACHE_BREAKPOINTS,
+                    boundaryIndices.size() - MAX_USER_CACHE_BREAKPOINTS);
+        }
+
+        List<ClaudeRequest.ClaudeContentBlock> blocks = new ArrayList<>(segments.size());
+        for (int i = 0; i < segments.size(); i++) {
+            String text = segments.get(i).text();
+            if (honored.contains(i)) {
+                blocks.add(ClaudeRequest.ClaudeContentBlock.textCached(text));
+            } else {
+                blocks.add(ClaudeRequest.ClaudeContentBlock.text(text));
+            }
+        }
+        return blocks;
+    }
+
+    /**
+     * Concatenates the text of an ordered list of {@link CacheableSegment}s into a single string,
+     * discarding boundary markers. Used by non-Anthropic providers (OpenAI Responses, Mistral,
+     * Grok, …) where prompt caching is automatic on a stable prefix (or unsupported): preserving
+     * segment order is sufficient, no explicit markers are emitted.
+     *
+     * @param segments ordered user-turn segments (may be null/empty → returns empty string)
+     * @return the concatenated text
+     */
+    public static String concatSegments(List<CacheableSegment> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (CacheableSegment seg : segments) {
+            sb.append(seg.text());
+        }
+        return sb.toString();
     }
 
     /**

@@ -11,6 +11,7 @@ import io.github.yannfavinleveque.agentic.agent.exception.MissingPromptVariableE
 import io.github.yannfavinleveque.agentic.agent.util.PromptTemplate;
 import io.github.yannfavinleveque.agentic.agent.model.AgentCallOverrides;
 import io.github.yannfavinleveque.agentic.agent.model.AgentResult;
+import io.github.yannfavinleveque.agentic.agent.model.CacheableSegment;
 import io.github.yannfavinleveque.agentic.agent.model.DefaultResult;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionCall;
 import io.github.yannfavinleveque.agentic.agent.model.FunctionConfig;
@@ -516,6 +517,62 @@ public class AgentService {
         Agent agent = agentManager.getAgent(agentId);
         Agent withOverrides = applyOverrides(agent, overrides);
         return unifiedRequestService.requestAgent(withOverrides, userMessage, history);
+    }
+
+    /**
+     * Segment-aware variant of {@link #requestAgent(String, String, List, AgentCallOverrides)}.
+     * <p>
+     * Instead of a single user-message string, the caller supplies an ordered list of
+     * {@link CacheableSegment}s for the current user turn. This lets the caller place prompt-cache
+     * breakpoints inside the user message (e.g. between stable "long memory", semi-stable
+     * "medium memory", and volatile recent-conversation zones of an agent preamble):
+     * </p>
+     * <ul>
+     *   <li><b>Anthropic / Azure Anthropic</b> — each segment becomes a {@code text} content block;
+     *       a {@code cache_control: {type: "ephemeral"}} marker is placed at the end of every
+     *       boundary segment. Anthropic's 4-breakpoint cap is respected (system + tools take one
+     *       each → at most 2 honored on the user turn, keeping the last ones).</li>
+     *   <li><b>All other providers</b> — segments are concatenated in order into a single user
+     *       message; boundary markers are ignored (their caching is automatic on a stable prefix,
+     *       or unsupported). No regression versus the single-string overload.</li>
+     * </ul>
+     * <p>
+     * The single-string overloads delegate here with one non-boundary segment, so this is a pure
+     * superset — zero breaking change.
+     * </p>
+     *
+     * @param agentId      Agent ID
+     * @param userSegments Ordered segments for the current user turn (non-null, non-empty)
+     * @param history      Previous conversation messages (can be null or empty)
+     * @param overrides    Per-call overrides (null or {@code none()} = no override)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgent(String agentId, List<CacheableSegment> userSegments,
+            List<Message> history, AgentCallOverrides overrides) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent withOverrides = applyOverrides(agent, overrides);
+        return unifiedRequestService.requestAgent(withOverrides, userSegments, history);
+    }
+
+    /**
+     * Segment-aware variant of {@link #requestAgent(String, String, List)} (no per-call overrides).
+     * See {@link #requestAgent(String, List, List, AgentCallOverrides)} for segment semantics.
+     * <p>
+     * Named distinctly ({@code requestAgentSegments}) rather than as a {@code requestAgent} overload
+     * to avoid ambiguity with {@link #requestAgent(String, String, List)} at {@code null} call sites
+     * (both a {@code String} and a {@code List<CacheableSegment>} second argument would otherwise
+     * match a literal {@code null}).
+     * </p>
+     *
+     * @param agentId      Agent ID
+     * @param userSegments Ordered segments for the current user turn (non-null, non-empty)
+     * @param history      Previous conversation messages (can be null or empty)
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgentSegments(String agentId,
+            List<CacheableSegment> userSegments, List<Message> history) {
+        Agent agent = agentManager.getAgent(agentId);
+        return unifiedRequestService.requestAgent(agent, userSegments, history);
     }
 
     /**
