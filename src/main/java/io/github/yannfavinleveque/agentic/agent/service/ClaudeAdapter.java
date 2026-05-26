@@ -339,9 +339,12 @@ public class ClaudeAdapter {
 
     /**
      * Turns an ordered list of {@link CacheableSegment}s into the {@code content} blocks of a single
-     * Anthropic user message. Each segment becomes a {@code text} block; a
+     * Anthropic user message. Each text segment becomes a {@code text} block; a
      * {@code cache_control: {type: "ephemeral"}} marker is placed on the block of every segment whose
-     * {@link CacheableSegment#cacheBoundary()} is {@code true}.
+     * {@link CacheableSegment#cacheBoundary()} is {@code true}. Each image segment
+     * ({@link CacheableSegment#isImage()}) becomes an {@code image} content block (base64 source)
+     * and <em>never</em> carries {@code cache_control} — an image is large/non-cacheable and must
+     * stay in the volatile tail without anchoring a cache prefix.
      * <p>
      * Anthropic caps the total number of {@code cache_control} markers per request at
      * {@link #MAX_TOTAL_CACHE_BREAKPOINTS}; with system + tools typically taking one each, only
@@ -358,10 +361,11 @@ public class ClaudeAdapter {
             throw new IllegalArgumentException("segments must not be null or empty");
         }
 
-        // Indices of segments that request a boundary, in order.
+        // Indices of segments that request a boundary, in order. Image segments are never
+        // boundaries (they must not anchor a cache prefix), so they are skipped here.
         List<Integer> boundaryIndices = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
-            if (segments.get(i).cacheBoundary()) {
+            if (!segments.get(i).isImage() && segments.get(i).cacheBoundary()) {
                 boundaryIndices.add(i);
             }
         }
@@ -381,11 +385,14 @@ public class ClaudeAdapter {
 
         List<ClaudeRequest.ClaudeContentBlock> blocks = new ArrayList<>(segments.size());
         for (int i = 0; i < segments.size(); i++) {
-            String text = segments.get(i).text();
-            if (honored.contains(i)) {
-                blocks.add(ClaudeRequest.ClaudeContentBlock.textCached(text));
+            CacheableSegment seg = segments.get(i);
+            if (seg.isImage()) {
+                // Real image block, base64 source. Never cache_control: an image is volatile.
+                blocks.add(ClaudeRequest.ClaudeContentBlock.imageBase64(seg.imageBase64(), seg.mimeType()));
+            } else if (honored.contains(i)) {
+                blocks.add(ClaudeRequest.ClaudeContentBlock.textCached(seg.text()));
             } else {
-                blocks.add(ClaudeRequest.ClaudeContentBlock.text(text));
+                blocks.add(ClaudeRequest.ClaudeContentBlock.text(seg.text()));
             }
         }
         return blocks;
@@ -396,6 +403,11 @@ public class ClaudeAdapter {
      * discarding boundary markers. Used by non-Anthropic providers (OpenAI Responses, Mistral,
      * Grok, …) where prompt caching is automatic on a stable prefix (or unsupported): preserving
      * segment order is sufficient, no explicit markers are emitted.
+     * <p>
+     * Image segments cannot be represented in a flat text string, so they degrade to a short
+     * {@code [image]} placeholder here (the segment-based vision path is Anthropic-first; use the
+     * {@code requestAgentVision(...)} overloads to send real images to OpenAI). This keeps
+     * non-Anthropic providers from crashing on an image segment while making the omission explicit.
      *
      * @param segments ordered user-turn segments (may be null/empty → returns empty string)
      * @return the concatenated text
@@ -406,7 +418,11 @@ public class ClaudeAdapter {
         }
         StringBuilder sb = new StringBuilder();
         for (CacheableSegment seg : segments) {
-            sb.append(seg.text());
+            if (seg.isImage()) {
+                sb.append("[image]");
+            } else {
+                sb.append(seg.text());
+            }
         }
         return sb.toString();
     }

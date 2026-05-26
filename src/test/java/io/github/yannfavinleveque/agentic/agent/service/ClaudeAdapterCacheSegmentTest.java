@@ -169,6 +169,98 @@ class ClaudeAdapterCacheSegmentTest {
     }
 
     @Nested
+    @DisplayName("image segments")
+    class ImageSegments {
+
+        private static final String B64 = "aGVsbG8taW1hZ2UtZGF0YQ=="; // "hello-image-data"
+
+        @Test
+        @DisplayName("Anthropic: image segment -> image content block (base64 source), no cache_control")
+        void imageSegmentBecomesImageBlock() {
+            List<ClaudeContentBlock> blocks = ClaudeAdapter.buildUserContentBlocks(List.of(
+                    CacheableSegment.image(B64, "image/png")));
+
+            assertEquals(1, blocks.size());
+            ClaudeContentBlock img = blocks.get(0);
+            assertEquals("image", img.getType());
+            assertNotNull(img.getSource(), "image block must carry a source");
+            assertEquals("base64", img.getSource().getType());
+            assertEquals("image/png", img.getSource().getMediaType());
+            assertEquals(B64, img.getSource().getData());
+            assertNull(img.getCacheControl(), "an image must NEVER carry cache_control (volatile)");
+        }
+
+        @Test
+        @DisplayName("Anthropic: mixed text/boundary/image -> text+image blocks, image stays volatile")
+        void mixedSegments() {
+            List<ClaudeContentBlock> blocks = ClaudeAdapter.buildUserContentBlocks(List.of(
+                    new CacheableSegment("stable", true),       // cached boundary
+                    new CacheableSegment("[image: png]", false),// volatile text marker
+                    CacheableSegment.image(B64, "image/png")));  // volatile image
+
+            assertEquals(3, blocks.size());
+            assertTrue(isCached(blocks.get(0)), "stable text boundary should be cached");
+            assertEquals("text", blocks.get(1).getType());
+            assertNull(blocks.get(1).getCacheControl());
+            assertEquals("image", blocks.get(2).getType());
+            assertNull(blocks.get(2).getCacheControl(), "image block must not be cached");
+        }
+
+        @Test
+        @DisplayName("image segments are never counted as cache boundaries")
+        void imageNotABoundaryEvenAfterTwoTextBoundaries() {
+            // Two text boundaries (both honored) + an image. The image must remain uncached and
+            // must not consume a breakpoint slot.
+            List<ClaudeContentBlock> blocks = ClaudeAdapter.buildUserContentBlocks(List.of(
+                    new CacheableSegment("a", true),
+                    new CacheableSegment("b", true),
+                    CacheableSegment.image(B64, "image/jpeg")));
+
+            assertTrue(isCached(blocks.get(0)));
+            assertTrue(isCached(blocks.get(1)));
+            assertEquals("image", blocks.get(2).getType());
+            assertNull(blocks.get(2).getCacheControl());
+        }
+
+        @Test
+        @DisplayName("non-Anthropic: image segment degrades to a [image] text placeholder")
+        void concatPlaceholder() {
+            String out = ClaudeAdapter.concatSegments(List.of(
+                    new CacheableSegment("before ", false),
+                    CacheableSegment.image(B64, "image/png"),
+                    new CacheableSegment(" after", false)));
+
+            assertEquals("before [image] after", out);
+            assertTrue(out.indexOf(B64) < 0, "base64 must never leak into the concatenated text");
+        }
+
+        @Test
+        @DisplayName("image factory rejects null/empty base64 or mime")
+        void imageFactoryValidation() {
+            assertThrows(IllegalArgumentException.class, () -> CacheableSegment.image(null, "image/png"));
+            assertThrows(IllegalArgumentException.class, () -> CacheableSegment.image("", "image/png"));
+            assertThrows(IllegalArgumentException.class, () -> CacheableSegment.image(B64, null));
+            assertThrows(IllegalArgumentException.class, () -> CacheableSegment.image(B64, ""));
+        }
+
+        @Test
+        @DisplayName("image segment accessors: isImage, imageBase64, mimeType; text empty; non-boundary")
+        void imageAccessors() {
+            CacheableSegment img = CacheableSegment.image(B64, "image/webp");
+            assertTrue(img.isImage());
+            assertEquals(B64, img.imageBase64());
+            assertEquals("image/webp", img.mimeType());
+            assertEquals("", img.text());
+            assertEquals(false, img.cacheBoundary(), "image segment must never be a boundary");
+
+            CacheableSegment txt = CacheableSegment.of("x");
+            assertEquals(false, txt.isImage());
+            assertNull(txt.imageBase64());
+            assertNull(txt.mimeType());
+        }
+    }
+
+    @Nested
     @DisplayName("CacheableSegment value type")
     class ValueType {
 
