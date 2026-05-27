@@ -627,6 +627,13 @@ public class AgentService {
             b.maxIterations(overrides.getMaxIterations());
             changed = true;
         }
+        if (overrides.getInstanceId() != null && !overrides.getInstanceId().isEmpty()) {
+            // Sticky: pin to ONE instance by restricting the Agent's instance allow-list to this id.
+            // The InstanceRouter already treats Agent.instances as an allow-list for getNextInstanceForModel
+            // (falling back to round-robin over all instances if the id can't serve the model).
+            b.instances(java.util.Collections.singletonList(overrides.getInstanceId()));
+            changed = true;
+        }
         return changed ? b.build() : base;
     }
 
