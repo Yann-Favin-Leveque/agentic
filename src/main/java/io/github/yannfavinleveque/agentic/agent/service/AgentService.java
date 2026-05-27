@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -573,6 +574,77 @@ public class AgentService {
             List<CacheableSegment> userSegments, List<Message> history) {
         Agent agent = agentManager.getAgent(agentId);
         return unifiedRequestService.requestAgent(agent, userSegments, history);
+    }
+
+    /**
+     * Segment-aware STREAMING variant with per-call {@link AgentCallOverrides} (e.g. sticky
+     * instanceId). Streams the final text turn token-by-token to {@code onToken} while preserving the
+     * cached preamble segments (memory/tools context) and the overrides. Tool-call turns fall back to
+     * blocking (see {@link #requestAgentStreaming(String, String, List, Consumer)}).
+     *
+     * @param agentId      Agent ID
+     * @param userSegments Ordered segments for the current user turn (the cached preamble)
+     * @param history      Previous conversation messages (can be null or empty)
+     * @param overrides    Per-call overrides (null = none; carries sticky instanceId / reasoning)
+     * @param onToken      Per-fragment callback (null → blocking)
+     * @return CompletableFuture with the agent's response as {@link AgentResult}
+     */
+    public CompletableFuture<AgentResult> requestAgentStreaming(String agentId,
+            List<CacheableSegment> userSegments, List<Message> history,
+            AgentCallOverrides overrides, Consumer<String> onToken) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent withOverrides = applyOverrides(agent, overrides);
+        return unifiedRequestService.requestAgentStreaming(withOverrides, userSegments, history, onToken);
+    }
+
+    /**
+     * Streaming (token-by-token) variant of {@link #requestAgent(String, String, List)}.
+     * <p>
+     * Performs a SINGLE streamed model call. As the model emits natural-language text, each fragment
+     * is passed to {@code onToken} in arrival order; the returned future completes with a fully
+     * reconstructed {@link AgentResult} (content = accumulated text, {@code usage}/cost preserved
+     * exactly like the blocking path, so downstream cost tracking is unaffected).
+     * </p>
+     * <p>
+     * Streaming is implemented for <b>Azure OpenAI / OpenAI</b> ({@code choices[].delta.content}) and
+     * <b>Anthropic / Azure Anthropic</b> ({@code content_block_delta}). Any other provider falls back
+     * to the blocking path transparently (no tokens emitted, same {@link AgentResult} returned).
+     * </p>
+     * <p>
+     * <b>Tool-calling is preserved.</b> Streaming applies only to a final text turn. If the streamed
+     * turn turns out to request a tool call, the streamed text is discarded and the turn is re-run on
+     * the blocking path so the {@code functionCalls} are parsed correctly — the returned
+     * {@link AgentResult} then carries those function calls (as with {@code requestAgent}). The
+     * caller's agentic loop executes the tool and calls this method again for the next turn.
+     * </p>
+     *
+     * @param agentId     Agent ID
+     * @param userMessage Current user message (may be {@code null} on autonomous follow-up turns)
+     * @param history     Previous conversation messages (can be null or empty)
+     * @param onToken     Per-fragment callback ({@code null} → behaves exactly like the blocking call)
+     * @return CompletableFuture with the agent's response as {@link AgentResult}
+     */
+    public CompletableFuture<AgentResult> requestAgentStreaming(String agentId, String userMessage,
+            List<Message> history, Consumer<String> onToken) {
+        Agent agent = agentManager.getAgent(agentId);
+        Agent resolvedAgent = resolveAgentInstructions(agent, null);
+        List<CacheableSegment> segments = userMessage == null
+                ? null : List.of(new CacheableSegment(userMessage, false));
+        return unifiedRequestService.requestAgentStreaming(resolvedAgent, segments, history, onToken);
+    }
+
+    /**
+     * Streaming variant without history (single-turn). See
+     * {@link #requestAgentStreaming(String, String, List, Consumer)}.
+     *
+     * @param agentId     Agent ID
+     * @param userMessage Current user message
+     * @param onToken     Per-fragment callback
+     * @return CompletableFuture with the agent's response
+     */
+    public CompletableFuture<AgentResult> requestAgentStreaming(String agentId, String userMessage,
+            Consumer<String> onToken) {
+        return requestAgentStreaming(agentId, userMessage, null, onToken);
     }
 
     /**

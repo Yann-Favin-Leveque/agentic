@@ -145,6 +145,156 @@ public class ClaudeAdapter {
             String reasoningEffort,
             String toolChoice) {
 
+        BuiltRequest built = buildRequest(instance, model, systemPrompt, messages, temperature,
+                maxTokens, resultClass, tools, reasoningEffort, toolChoice, false);
+        final Map<String, String> headers = built.extraHeaders;
+
+        return httpHelper.post(
+                instance,
+                ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                model,
+                built.request,
+                ClaudeResponse.class,
+                null,
+                headers).handle((response, error) -> {
+                    if (error != null) {
+                        Throwable cause = error instanceof java.util.concurrent.CompletionException
+                                ? error.getCause()
+                                : error;
+                        throw translateException(
+                                cause instanceof Exception ? (Exception) cause : new RuntimeException(cause));
+                    }
+                    return response;
+                });
+    }
+
+    /**
+     * Streaming variant of {@link #callClaudeAsync}: requests an SSE response and feeds each
+     * decoded text fragment to {@code onToken} as it arrives. Reconstructs a synthetic
+     * {@link ClaudeResponse} from the accumulated stream (text content blocks, usage, stop_reason)
+     * so downstream parsing is identical to the blocking path.
+     *
+     * <p><b>Tool-calling boundary:</b> Anthropic also streams {@code tool_use} blocks as
+     * {@code input_json_delta} events, but this method does NOT surface them as streamed text and
+     * does NOT reconstruct tool_use blocks. If the turn ends with {@code stop_reason == "tool_use"}
+     * the reconstructed response carries that stop_reason with whatever text preceded it; the
+     * caller (UnifiedRequestService) treats this turn as non-final, discards the streamed text, and
+     * re-issues the turn through the blocking path so tool calls are parsed correctly. Streaming is
+     * therefore only meaningful for plain-text (final) turns. See the task notes / requestAgentStreaming.</p>
+     */
+    public java.util.concurrent.CompletableFuture<ClaudeResponse> callClaudeStreamAsync(
+            Instance instance, String model, String systemPrompt,
+            List<ClaudeRequest.ClaudeMessage> messages,
+            Double temperature, Integer maxTokens,
+            Class<?> resultClass,
+            List<ClaudeRequest.ClaudeTool> tools,
+            String reasoningEffort,
+            String toolChoice,
+            long timeoutMs,
+            java.util.function.Consumer<String> onToken) {
+
+        BuiltRequest built = buildRequest(instance, model, systemPrompt, messages, temperature,
+                maxTokens, resultClass, tools, reasoningEffort, toolChoice, true);
+        final Map<String, String> headers = built.extraHeaders;
+
+        final StringBuilder textAccumulator = new StringBuilder();
+        final java.util.concurrent.atomic.AtomicReference<Integer> inputTokens = new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicReference<Integer> outputTokens = new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicReference<Integer> cacheRead = new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicReference<Integer> cacheCreate = new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicReference<String> stopReason = new java.util.concurrent.atomic.AtomicReference<>();
+
+        java.util.function.Consumer<String> onLine = line -> {
+            io.github.yannfavinleveque.agentic.support.StreamDeltaParsers.Delta d =
+                    io.github.yannfavinleveque.agentic.support.StreamDeltaParsers.parseAnthropicDelta(line);
+            if (!d.text.isEmpty()) {
+                textAccumulator.append(d.text);
+                if (onToken != null) {
+                    onToken.accept(d.text);
+                }
+            }
+            if (d.inputTokens != null) inputTokens.set(d.inputTokens);
+            if (d.outputTokens != null) outputTokens.set(d.outputTokens);
+            if (d.cacheReadInputTokens != null) cacheRead.set(d.cacheReadInputTokens);
+            if (d.cacheCreationInputTokens != null) cacheCreate.set(d.cacheCreationInputTokens);
+            if (d.finishReason != null) stopReason.set(d.finishReason);
+        };
+
+        return httpHelper.postStream(
+                instance,
+                ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                model,
+                built.request,
+                onLine,
+                headers,
+                timeoutMs).handle((rawBody, error) -> {
+                    if (error != null) {
+                        Throwable cause = error instanceof java.util.concurrent.CompletionException
+                                ? error.getCause()
+                                : error;
+                        throw translateException(
+                                cause instanceof Exception ? (Exception) cause : new RuntimeException(cause));
+                    }
+                    return buildSyntheticResponse(model, textAccumulator.toString(), stopReason.get(),
+                            inputTokens.get(), outputTokens.get(), cacheRead.get(), cacheCreate.get());
+                });
+    }
+
+    /**
+     * Reconstructs a {@link ClaudeResponse} equivalent to a blocking text response, from the
+     * fragments accumulated over a stream. Only a single text content block is produced (the
+     * streaming path is for final natural-language turns; tool_use is handled by the blocking path).
+     */
+    private ClaudeResponse buildSyntheticResponse(String model, String text, String stopReason,
+            Integer inputTokens, Integer outputTokens, Integer cacheRead, Integer cacheCreate) {
+        ClaudeResponse resp = new ClaudeResponse();
+        resp.setModel(model);
+        resp.setType("message");
+        resp.setRole("assistant");
+        resp.setStopReason(stopReason);
+
+        ClaudeResponse.Content content = new ClaudeResponse.Content();
+        content.setType("text");
+        content.setText(text);
+        resp.setContent(new ArrayList<>(List.of(content)));
+
+        if (inputTokens != null || outputTokens != null || cacheRead != null || cacheCreate != null) {
+            ClaudeResponse.Usage usage = new ClaudeResponse.Usage();
+            usage.setInputTokens(inputTokens);
+            usage.setOutputTokens(outputTokens);
+            usage.setCacheReadInputTokens(cacheRead);
+            usage.setCacheCreationInputTokens(cacheCreate);
+            resp.setUsage(usage);
+        }
+        return resp;
+    }
+
+    /** Holder for a built {@link ClaudeRequest} plus any extra HTTP headers it requires. */
+    private static final class BuiltRequest {
+        final ClaudeRequest request;
+        final Map<String, String> extraHeaders;
+
+        BuiltRequest(ClaudeRequest request, Map<String, String> extraHeaders) {
+            this.request = request;
+            this.extraHeaders = extraHeaders;
+        }
+    }
+
+    /**
+     * Builds the {@link ClaudeRequest} (system/tools caching, thinking, tool_choice, structured
+     * output) shared by the blocking and streaming paths. When {@code stream} is true the request's
+     * {@code stream} flag is set.
+     */
+    private BuiltRequest buildRequest(
+            Instance instance, String model, String systemPrompt,
+            List<ClaudeRequest.ClaudeMessage> messages,
+            Double temperature, Integer maxTokens,
+            Class<?> resultClass,
+            List<ClaudeRequest.ClaudeTool> tools,
+            String reasoningEffort,
+            String toolChoice,
+            boolean stream) {
+
         int resolvedMaxTokens = maxTokens != null ? maxTokens : 32768;
 
         // Prompt caching: both direct Anthropic and Azure Anthropic honor cache_control. Verified by
@@ -260,26 +410,12 @@ public class ClaudeAdapter {
             }
         }
 
-        ClaudeRequest request = requestBuilder.build();
-        final Map<String, String> headers = extraHeaders;
+        if (stream) {
+            requestBuilder.stream(true);
+        }
 
-        return httpHelper.post(
-                instance,
-                ProviderConfig.Endpoint.CHAT_COMPLETIONS,
-                model,
-                request,
-                ClaudeResponse.class,
-                null,
-                headers).handle((response, error) -> {
-                    if (error != null) {
-                        Throwable cause = error instanceof java.util.concurrent.CompletionException
-                                ? error.getCause()
-                                : error;
-                        throw translateException(
-                                cause instanceof Exception ? (Exception) cause : new RuntimeException(cause));
-                    }
-                    return response;
-                });
+        ClaudeRequest request = requestBuilder.build();
+        return new BuiltRequest(request, extraHeaders);
     }
 
     /**

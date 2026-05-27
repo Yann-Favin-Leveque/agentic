@@ -117,6 +117,12 @@ public class ClaudeRequest {
     private Map<String, Object> thinking;
 
     /**
+     * When {@code true}, request a streaming (SSE) response. Only set on the token-by-token
+     * streaming path; left {@code null} (omitted) for blocking requests.
+     */
+    private Boolean stream;
+
+    /**
      * Represents a single message in Claude conversation. Content can be a string (text-only) or a list
      * of content blocks (multimodal).
      */

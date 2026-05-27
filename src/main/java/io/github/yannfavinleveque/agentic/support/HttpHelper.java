@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 /**
  * Simple HTTP helper for making API calls using ProviderConfig. NOTE: Concurrency control has been
@@ -236,6 +237,104 @@ public class HttpHelper {
         } catch (Exception e) {
             logger.error("HTTP POST (raw) failed", e);
             return CompletableFuture.failedFuture(new RuntimeException("HTTP POST failed: " + e.getMessage(), e));
+        }
+    }
+
+    /**
+     * Makes a streaming POST request (Server-Sent Events). Builds the request exactly like
+     * {@link #postRaw} (same URL/auth construction), but reads the response body as a stream of
+     * lines via {@link HttpResponse.BodyHandlers#ofLines()}. For every raw SSE line received,
+     * {@code onLine.accept(line)} is invoked AND the line is appended to an internal buffer; the
+     * completed future yields the full concatenated raw body (newline-joined) for fallback/debug.
+     *
+     * <p>The caller is responsible for parsing each line (e.g. via
+     * {@link StreamDeltaParsers#parseOpenAIDelta} / {@link StreamDeltaParsers#parseAnthropicDelta}).
+     * The request body must already have {@code "stream": true} (and any provider-specific stream
+     * options) set by the caller.</p>
+     *
+     * <p>On HTTP error status (>= 400) or any I/O failure the returned future completes
+     * exceptionally. {@code onLine} is never invoked for an error response (the body is drained
+     * into the exception message instead).</p>
+     *
+     * @param instance    instance to call (provides base URL + auth)
+     * @param endpoint    logical endpoint
+     * @param model       model name (used for path templating)
+     * @param requestBody body to JSON-serialize (must contain stream:true)
+     * @param onLine      callback invoked once per raw SSE line as it arrives
+     * @param timeoutMs   per-request timeout in milliseconds
+     * @return future with the full raw response body (all lines concatenated with '\n')
+     */
+    public CompletableFuture<String> postStream(
+            Instance instance,
+            ProviderConfig.Endpoint endpoint,
+            String model,
+            Object requestBody,
+            Consumer<String> onLine,
+            long timeoutMs) {
+        return postStream(instance, endpoint, model, requestBody, onLine, null, timeoutMs);
+    }
+
+    /**
+     * Streaming POST with extra headers (e.g. Anthropic structured-outputs beta header).
+     * See {@link #postStream(Instance, ProviderConfig.Endpoint, String, Object, Consumer, long)}.
+     */
+    public CompletableFuture<String> postStream(
+            Instance instance,
+            ProviderConfig.Endpoint endpoint,
+            String model,
+            Object requestBody,
+            Consumer<String> onLine,
+            Map<String, String> extraHeaders,
+            long timeoutMs) {
+
+        try {
+            String url = buildUrl(instance, endpoint, model, null);
+            String jsonBody = objectMapper.writeValueAsString(requestBody);
+
+            logger.debug("POST STREAM {} - Body: {}", url, jsonBody);
+
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(Duration.ofMillis(timeoutMs));
+
+            addAuthHeaders(requestBuilder, instance);
+
+            if (extraHeaders != null) {
+                for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
+                    if (header.getKey() == null || header.getValue() == null) continue;
+                    requestBuilder.header(header.getKey(), header.getValue());
+                }
+            }
+
+            HttpRequest request = requestBuilder.build();
+
+            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofLines())
+                    .thenApply(response -> {
+                        if (response.statusCode() >= 400) {
+                            // Drain the error body (it is not SSE) into the exception message.
+                            String errBody = response.body()
+                                    .collect(java.util.stream.Collectors.joining("\n"));
+                            throw new RuntimeException("HTTP " + response.statusCode() + ": " + errBody);
+                        }
+
+                        StringBuilder fullBody = new StringBuilder();
+                        response.body().forEach(line -> {
+                            fullBody.append(line).append('\n');
+                            try {
+                                onLine.accept(line);
+                            } catch (Exception cbErr) {
+                                logger.warn("postStream onLine callback threw: {}", cbErr.getMessage());
+                            }
+                        });
+                        return fullBody.toString();
+                    });
+
+        } catch (Exception e) {
+            logger.error("HTTP POST (stream) failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("HTTP POST stream failed: " + e.getMessage(), e));
         }
     }
 

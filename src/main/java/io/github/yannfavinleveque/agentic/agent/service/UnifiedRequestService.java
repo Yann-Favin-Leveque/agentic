@@ -53,6 +53,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Unified stateless request service for both OpenAI and Claude. Uses OpenAI Responses API and
@@ -189,6 +191,13 @@ public class UnifiedRequestService {
         private final List<FunctionCall> functionCalls;
         private final TokenUsage tokenUsage;
 
+        /**
+         * Stream-only: the provider's finish/stop reason for the streamed turn
+         * ({@code finish_reason} for OpenAI, {@code stop_reason} for Anthropic). Lets the streaming
+         * boundary check detect a tool-call turn. Null on the blocking path.
+         */
+        private String streamStopReason;
+
         static ParsedResponse ofText(String text) {
             return new ParsedResponse(text, Collections.emptyList(), null);
         }
@@ -290,6 +299,301 @@ public class UnifiedRequestService {
             List<CacheableSegment> userSegments, List<Message> history) {
         Agent agent = agentManager.getAgent(agentId);
         return attemptRequestWithRetry(agent, userSegments, history, 0);
+    }
+
+    // ==================== STREAMING (token-by-token SSE) ====================
+
+    /**
+     * Streaming variant of {@link #requestAgent(Agent, String, List)}. Performs a SINGLE streamed
+     * model call: as the provider emits natural-language text deltas, each fragment is forwarded to
+     * {@code onToken}; the completed future yields a fully-reconstructed {@link AgentResult}
+     * (content = accumulated text, usage = the usage reported in the stream, cost via the usual
+     * {@code calculatePricing} path).
+     *
+     * <p><b>Provider support:</b> only Azure OpenAI / OpenAI (Responses-shaped — see note) and
+     * Anthropic / Azure Anthropic stream token-by-token. For every other provider this method
+     * transparently falls back to the blocking {@link #attemptRequestWithRetry} path (no tokens are
+     * emitted, the final {@link AgentResult} is returned as usual).</p>
+     *
+     * <p><b>OpenAI note:</b> streaming uses the Chat Completions wire format
+     * ({@code choices[].delta.content}); the blocking agent path uses the Responses API. The
+     * streamed text and usage are therefore parsed from Chat Completions chunks. Tools/structured
+     * output are NOT sent on the streamed call (streaming is for the final text turn only).</p>
+     *
+     * <p><b>Tool-calling boundary (V1 behavior):</b> the stream is treated as the final turn ONLY if
+     * it produces plain text with no tool call. If the provider signals a tool call
+     * ({@code finish_reason == tool_calls} / {@code stop_reason == tool_use}), the streamed text is
+     * <em>discarded</em> and the same turn is re-issued through the normal blocking path, whose
+     * {@link AgentResult} (carrying the parsed {@code functionCalls}) is returned. The caller's
+     * agentic loop then executes the tool and calls {@code requestAgentStreaming} again for the next
+     * turn. Tool-calling is never broken; at worst a tool-call turn is computed twice (once streamed
+     * and thrown away, once blocking). Retries/rate-limiting wrap the whole operation.</p>
+     *
+     * @param agent        resolved agent (caller must not mutate during the call)
+     * @param userSegments ordered user-turn segments (null on autonomous follow-up iterations)
+     * @param history      previous conversation messages (nullable)
+     * @param onToken      callback invoked per text fragment (nullable → behaves like blocking)
+     * @return future with the reconstructed {@link AgentResult}
+     */
+    public CompletableFuture<AgentResult> requestAgentStreaming(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history, Consumer<String> onToken) {
+        if (onToken == null) {
+            // No sink → no point streaming; behave exactly like the blocking path.
+            return attemptRequestWithRetry(agent, userSegments, history, 0);
+        }
+        return attemptStreamingWithRetry(agent, userSegments, history, onToken, 0);
+    }
+
+    private CompletableFuture<AgentResult> attemptStreamingWithRetry(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history,
+            Consumer<String> onToken, int attempt) {
+
+        return executeStreamingRequest(agent, userSegments, history, onToken)
+                .thenCompose(parsed -> {
+                    // Tool-call boundary: a streamed turn that ended up wanting a tool is NOT the
+                    // final answer. Discard the streamed text and re-run the SAME turn blocking so
+                    // the function calls are parsed correctly. (Tokens already emitted are ignored
+                    // by the caller's agentic loop, which will re-stream the next turn.)
+                    if (parsed.hasFunctionCalls() || isToolCallStop(parsed)) {
+                        logger.info("Streaming turn produced a tool call (stop={}); falling back to blocking turn "
+                                + "for correct tool parsing [Agent: {}]", parsed.streamStopReason, agent.getName());
+                        return attemptRequestWithRetry(agent, userSegments, history, 0);
+                    }
+                    return deserializeResponse(agent, parsed);
+                })
+                .handle((result, error) -> {
+                    if (error == null) {
+                        return CompletableFuture.completedFuture(result);
+                    }
+                    Throwable cause = unwrapException(error);
+                    int maxRetries = getMaxRetriesForError(cause, agent);
+                    if (maxRetries < 0 || attempt >= maxRetries) {
+                        return CompletableFuture.<AgentResult>failedFuture(cause);
+                    }
+                    long delay = calculateDelay(cause, attempt);
+                    logger.warn("Streaming request failed (attempt {}/{}), retrying in {}ms: {}",
+                            attempt + 1, maxRetries, delay, cause.getMessage());
+                    return delayAsync(delay)
+                            .thenCompose(v -> attemptStreamingWithRetry(agent, userSegments, history, onToken, attempt + 1));
+                })
+                .thenCompose(f -> f);
+    }
+
+    private static boolean isToolCallStop(ParsedResponse parsed) {
+        String stop = parsed.streamStopReason;
+        return "tool_calls".equals(stop) || "tool_use".equals(stop);
+    }
+
+    private CompletableFuture<ParsedResponse> executeStreamingRequest(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history, Consumer<String> onToken) {
+
+        if (instanceRouter.isDegradedMode()) {
+            return CompletableFuture.failedFuture(
+                    new AgentException(AgentException.ErrorCode.NO_INSTANCE_AVAILABLE, "No instances configured"));
+        }
+
+        int instanceIdx = instanceRouter.getNextInstanceForModel(agent.getModel(), agent.getInstances());
+        Instance instance = instanceRouter.getInstance(instanceIdx);
+        InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
+
+        // Only Anthropic and OpenAI-shaped Azure OpenAI/OpenAI providers stream token-by-token.
+        boolean anthropic = ProviderConfig.isAnthropicModel(agent.getModel())
+                || instance.getProvider() == Provider.ANTHROPIC
+                || instance.getProvider() == Provider.AZURE_ANTHROPIC;
+        boolean openai = instance.getProvider() == Provider.OPENAI
+                || instance.getProvider() == Provider.AZURE_OPENAI
+                || instance.getProvider() == Provider.AZURE;
+        if (!anthropic && !openai) {
+            // Unsupported provider for streaming → run blocking (no tokens) through the standard
+            // permit-managed path and adapt the AgentResult back to a ParsedResponse.
+            logger.debug("Streaming not supported for provider {} / model {} — using blocking path",
+                    instance.getProvider(), agent.getModel());
+            return executeRequest(agent, userSegments, history, 0);
+        }
+
+        return limiter.acquireAsync().thenCompose(v -> {
+            long rateDelay = limiter.acquireRateSlot();
+            if (rateDelay > 0) {
+                return delayAsync(rateDelay).thenCompose(v2 ->
+                        executeStreamingAfterPermit(agent, userSegments, history, instance, limiter, onToken, anthropic));
+            }
+            return executeStreamingAfterPermit(agent, userSegments, history, instance, limiter, onToken, anthropic);
+        });
+    }
+
+    private CompletableFuture<ParsedResponse> executeStreamingAfterPermit(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history,
+            Instance instance, InstanceLimiter limiter, Consumer<String> onToken, boolean anthropic) {
+
+        logger.info("→ REQUEST START [STREAM] | Agent: {} | Model: {} | Instance: {}",
+                agent.getName(), agent.getModel(), instance.getId());
+
+        CompletableFuture<ParsedResponse> requestFuture;
+        try {
+            requestFuture = anthropic
+                    ? executeClaudeStreamRequest(agent, userSegments, history, instance, onToken)
+                    : executeOpenAIStreamRequest(agent, userSegments, history, instance, onToken);
+        } catch (Exception e) {
+            requestFuture = CompletableFuture.failedFuture(e);
+        }
+
+        return requestFuture.whenComplete((response, error) -> {
+            limiter.release();
+            if (error == null) {
+                String usageLog = response.getTokenUsage() != null
+                        ? " | " + ModelPricing.formatForLog(response.getTokenUsage()) : "";
+                logger.info("← RESPONSE END [STREAM] | Agent: {}{}", agent.getName(), usageLog);
+            } else {
+                logger.error("← RESPONSE ERROR [STREAM] | Agent: {} | Error: {}", agent.getName(), error.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Streamed Anthropic turn. Builds messages exactly like {@link #executeClaudeRequest} and
+     * delegates to {@link ClaudeAdapter#callClaudeStreamAsync}; the synthetic {@link ClaudeResponse}
+     * is parsed through the normal {@link #parseClaudeResponse}, then the stream stop_reason is
+     * threaded onto the {@link ParsedResponse} so the boundary check can detect a tool turn.
+     */
+    private CompletableFuture<ParsedResponse> executeClaudeStreamRequest(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history,
+            Instance instance, Consumer<String> onToken) {
+
+        List<ClaudeRequest.ClaudeMessage> messages = new ArrayList<>();
+        if (history != null) {
+            for (Message msg : history) {
+                if (!msg.isSystem()) {
+                    messages.add(buildClaudeMessage(msg));
+                }
+            }
+        }
+        if (userSegments != null && !userSegments.isEmpty()) {
+            messages.add(ClaudeRequest.ClaudeMessage.builder()
+                    .role("user")
+                    .contentBlocks(ClaudeAdapter.buildUserContentBlocks(userSegments))
+                    .build());
+        }
+
+        List<ClaudeRequest.ClaudeTool> tools = ToolBuilder.buildClaudeTools(agent);
+
+        Class<?> resultClass = null;
+        if (agent.getResultClass() != null && !agent.getResultClass().isEmpty()) {
+            String fullClassName = config.resolveResultClassName(agent.getResultClass());
+            if (fullClassName != null) {
+                try {
+                    resultClass = Class.forName(fullClassName);
+                } catch (ClassNotFoundException e) {
+                    logger.warn("Result class not found: {} (resolved: {})", agent.getResultClass(), fullClassName);
+                }
+            }
+        }
+
+        return claudeAdapter.callClaudeStreamAsync(
+                instance,
+                agent.getModel(),
+                agent.getInstructions(),
+                messages,
+                agent.getTemperature(),
+                agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768,
+                resultClass,
+                tools,
+                agent.getReasoningEffort(),
+                agent.getToolChoice(),
+                agent.getResponseTimeout(),
+                onToken)
+                .thenApply(resp -> {
+                    ParsedResponse parsed = parseClaudeResponse(resp, instance);
+                    parsed.streamStopReason = resp.getStopReason();
+                    return parsed;
+                });
+    }
+
+    /**
+     * Streamed OpenAI / Azure OpenAI turn via the Chat Completions endpoint
+     * ({@code choices[].delta.content}). Text fragments are forwarded to {@code onToken} and
+     * accumulated; the final {@code usage} chunk (requested via {@code stream_options.include_usage})
+     * feeds {@link #calculatePricing}. Tools / structured output are intentionally omitted — the
+     * streamed turn is the final natural-language turn; tool turns go through the blocking path.
+     */
+    private CompletableFuture<ParsedResponse> executeOpenAIStreamRequest(
+            Agent agent, List<CacheableSegment> userSegments, List<Message> history,
+            Instance instance, Consumer<String> onToken) {
+
+        // Build Chat Completions messages (system + history + current user turn).
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (agent.getInstructions() != null && !agent.getInstructions().isEmpty()) {
+            Map<String, Object> sys = new HashMap<>();
+            sys.put("role", "system");
+            sys.put("content", agent.getInstructions());
+            messages.add(sys);
+        }
+        if (history != null) {
+            for (Message msg : history) {
+                if (msg.isSystem()) continue;
+                Map<String, Object> m = new HashMap<>();
+                m.put("role", msg.getRole());
+                m.put("content", msg.getContent() != null ? msg.getContent() : "");
+                messages.add(m);
+            }
+        }
+        String userMessage = (userSegments == null) ? null : ClaudeAdapter.concatSegments(userSegments);
+        if (userMessage != null) {
+            Map<String, Object> u = new HashMap<>();
+            u.put("role", "user");
+            u.put("content", userMessage);
+            messages.add(u);
+        }
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", agent.getModel());
+        requestBody.put("messages", messages);
+        requestBody.put("max_completion_tokens", agent.getMaxTokens() != null ? agent.getMaxTokens() : 32768);
+        if (agent.getTemperature() != null) {
+            requestBody.put("temperature", agent.getTemperature());
+        }
+        requestBody.put("stream", true);
+        requestBody.put("stream_options", Map.of("include_usage", true));
+
+        final StringBuilder textAccumulator = new StringBuilder();
+        final AtomicReference<Integer> inputTokens = new AtomicReference<>();
+        final AtomicReference<Integer> outputTokens = new AtomicReference<>();
+        final AtomicReference<Integer> cacheRead = new AtomicReference<>();
+        final AtomicReference<String> finishReason = new AtomicReference<>();
+
+        Consumer<String> onLine = line -> {
+            io.github.yannfavinleveque.agentic.support.StreamDeltaParsers.Delta d =
+                    io.github.yannfavinleveque.agentic.support.StreamDeltaParsers.parseOpenAIDelta(line);
+            if (!d.text.isEmpty()) {
+                textAccumulator.append(d.text);
+                onToken.accept(d.text);
+            }
+            if (d.inputTokens != null) inputTokens.set(d.inputTokens);
+            if (d.outputTokens != null) outputTokens.set(d.outputTokens);
+            if (d.cacheReadInputTokens != null) cacheRead.set(d.cacheReadInputTokens);
+            if (d.finishReason != null) finishReason.set(d.finishReason);
+        };
+
+        return httpHelper.postStream(
+                instance,
+                ProviderConfig.Endpoint.CHAT_COMPLETIONS,
+                agent.getModel(),
+                requestBody,
+                onLine,
+                agent.getResponseTimeout())
+                .thenApply(rawBody -> {
+                    Integer in = inputTokens.get();
+                    Integer cached = cacheRead.get();
+                    Integer uncached = in;
+                    if (in != null && cached != null) {
+                        uncached = Math.max(0, in - cached);
+                    }
+                    TokenUsage usage = (in != null || outputTokens.get() != null)
+                            ? calculatePricing(agent.getModel(), uncached, outputTokens.get(), null, cached, instance)
+                            : null;
+                    ParsedResponse parsed = ParsedResponse.ofText(textAccumulator.toString(), usage);
+                    parsed.streamStopReason = finishReason.get();
+                    return parsed;
+                });
     }
 
     /**
