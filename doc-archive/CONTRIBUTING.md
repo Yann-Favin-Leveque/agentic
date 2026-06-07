@@ -2,7 +2,7 @@
 Thank you very much for your interest in contributing to the improvement of this project. Please, follow the next guidelines.
 
 ## General Guidelines
-1. Keep the code compatible with Java 11.
+1. Keep the code compatible with Java 17.
 1. Follow existing code styles present in the project.
 1. Avoid adding new dependencies as much as possible.
 1. Ensure to add Javadoc where necessary.
