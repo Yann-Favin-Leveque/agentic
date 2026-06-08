@@ -76,6 +76,16 @@ public abstract class AgentResult {
     private TokenUsage usage;
 
     /**
+     * Provider-native built-in tool calls the model performed this turn that are NOT function calls —
+     * specifically web searches (Responses API {@code web_search_call} items). Each entry is the search
+     * query string. These are executed inside the provider and don't surface as {@link FunctionCall}s,
+     * so callers that want to RECORD/show that a search happened (observability, anti-hallucination
+     * audits) read them here. Empty when the turn ran no built-in search.
+     */
+    @JsonIgnore
+    private List<String> webSearchQueries = new ArrayList<>();
+
+    /**
      * Gets the content/response from the agent. Subclasses may override for custom behavior.
      * Default implementation returns toString().
      *
@@ -93,6 +103,21 @@ public abstract class AgentResult {
     @JsonIgnore
     public List<FunctionCall> getFunctionCalls() {
         return functionCalls != null ? functionCalls : Collections.emptyList();
+    }
+
+    /**
+     * Returns the provider-native web-search query strings performed this turn (Responses API
+     * {@code web_search_call} items), or an empty list if none.
+     */
+    @JsonIgnore
+    public List<String> getWebSearchQueries() {
+        return webSearchQueries != null ? webSearchQueries : Collections.emptyList();
+    }
+
+    /** Sets the provider-native web-search query strings performed this turn. */
+    @JsonIgnore
+    public void setWebSearchQueries(List<String> webSearchQueries) {
+        this.webSearchQueries = webSearchQueries;
     }
 
     /**

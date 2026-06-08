@@ -198,6 +198,14 @@ public class UnifiedRequestService {
          */
         private String streamStopReason;
 
+        /**
+         * Responses API: query strings of any provider-native {@code web_search_call} items the model
+         * performed this turn. Settable (like {@link #streamStopReason}) so it can be filled while
+         * iterating the output array without touching the immutable constructor. Surfaced onto
+         * {@link AgentResult#getWebSearchQueries()} so callers can record that a search happened.
+         */
+        private List<String> webSearchQueries = new ArrayList<>();
+
         static ParsedResponse ofText(String text) {
             return new ParsedResponse(text, Collections.emptyList(), null);
         }
@@ -1962,6 +1970,10 @@ public class UnifiedRequestService {
             if (parsed.getTokenUsage() != null) {
                 result.setUsage(parsed.getTokenUsage());
             }
+            // Propagate provider-native web-search queries (so callers can record that a search ran).
+            if (parsed.getWebSearchQueries() != null && !parsed.getWebSearchQueries().isEmpty()) {
+                result.setWebSearchQueries(parsed.getWebSearchQueries());
+            }
 
             return CompletableFuture.completedFuture(result);
 
@@ -2277,13 +2289,31 @@ public class UnifiedRequestService {
 
             StringBuilder textContent = new StringBuilder();
             List<FunctionCall> functionCalls = new ArrayList<>();
+            List<String> webSearchQueries = new ArrayList<>();
             boolean hasReasoning = false;
 
             // Process all output items
             for (Map<String, Object> item : output) {
                 String type = (String) item.get("type");
 
-                if ("message".equals(type)) {
+                if ("web_search_call".equals(type)) {
+                    // Provider-native web search the model performed in-line (not a function_call).
+                    // Capture the query string(s) so callers can record/show that a real search ran —
+                    // these never reach FunctionCall and were previously dropped silently.
+                    Object action = item.get("action");
+                    if (action instanceof Map) {
+                        Map<?, ?> a = (Map<?, ?>) action;
+                        Object q = a.get("query");
+                        if (q != null) {
+                            webSearchQueries.add(q.toString());
+                        } else if (a.get("queries") instanceof List) {
+                            for (Object qq : (List<?>) a.get("queries")) {
+                                if (qq != null) webSearchQueries.add(qq.toString());
+                            }
+                        }
+                    }
+                    logger.debug("Parsed web_search_call ({} queries so far)", webSearchQueries.size());
+                } else if ("message".equals(type)) {
                     // Extract text from message
                     List<Map<String, Object>> content = (List<Map<String, Object>>) item.get("content");
                     if (content != null) {
@@ -2347,12 +2377,16 @@ public class UnifiedRequestService {
             // If we have function calls, return them (with or without text)
             if (!functionCalls.isEmpty()) {
                 String text = textContent.length() > 0 ? textContent.toString() : null;
-                return ParsedResponse.of(text, functionCalls, tokenUsage);
+                ParsedResponse pr = ParsedResponse.of(text, functionCalls, tokenUsage);
+                pr.setWebSearchQueries(webSearchQueries);
+                return pr;
             }
 
             // Return text content if available
             if (textContent.length() > 0) {
-                return ParsedResponse.ofText(textContent.toString(), tokenUsage);
+                ParsedResponse pr = ParsedResponse.ofText(textContent.toString(), tokenUsage);
+                pr.setWebSearchQueries(webSearchQueries);
+                return pr;
             }
 
             // Last fallback: try to extract any text from first output
@@ -2553,6 +2587,10 @@ public class UnifiedRequestService {
             // Propagate token usage to result
             if (parsed.getTokenUsage() != null) {
                 result.setUsage(parsed.getTokenUsage());
+            }
+            // Propagate provider-native web-search queries (so callers can record that a search ran).
+            if (parsed.getWebSearchQueries() != null && !parsed.getWebSearchQueries().isEmpty()) {
+                result.setWebSearchQueries(parsed.getWebSearchQueries());
             }
 
             return CompletableFuture.completedFuture(result);
