@@ -79,6 +79,24 @@ public enum Provider {
     GEMINI,
 
     /**
+     * AWS Bedrock runtime for Anthropic Claude models
+     * (bedrock-runtime.{region}.amazonaws.com).
+     * <p>
+     * Uses the Anthropic-native InvokeModel wire format: {@code POST
+     * {url}/model/{modelId}/invoke}, where {@code modelId} is the Bedrock model id (e.g.
+     * {@code anthropic.claude-opus-4-8} or an EU inference-profile id
+     * {@code eu.anthropic.claude-opus-4-8}). The request body is the standard Anthropic
+     * Messages payload EXCEPT that {@code model} is omitted (it is in the URL) and
+     * {@code anthropic_version} (e.g. {@code bedrock-2023-05-31}) is carried IN the body.
+     * The response is the standard Anthropic Messages JSON.
+     * <p>
+     * Authentication: a long-lived Bedrock API key sent as
+     * {@code Authorization: Bearer <key>} (no SigV4). For SigV4 / IAM-role auth, use
+     * {@link #CUSTOM} or a future dedicated signing path (see ProviderConfig TODO).
+     */
+    BEDROCK,
+
+    /**
      * Legacy: Alias for AZURE_OPENAI (backward compatibility)
      * Use AZURE_OPENAI or AZURE_ANTHROPIC instead
      */

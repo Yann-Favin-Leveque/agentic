@@ -227,6 +227,14 @@ public class InstanceConfig {
     }
 
     /**
+     * Check if this is an AWS Bedrock instance (Anthropic Claude via InvokeModel).
+     * @return true if provider is "bedrock"
+     */
+    public boolean isBedrock() {
+        return "bedrock".equalsIgnoreCase(provider);
+    }
+
+    /**
      * Check if this is a fully user-defined custom provider instance.
      * @return true if provider is "custom"
      */
@@ -265,9 +273,9 @@ public class InstanceConfig {
             throw new IllegalArgumentException("Instance 'provider' is required for instance: " + id);
         }
         if (!isOpenAI() && !isAzure() && !isAnthropic() && !isMistral() && !isAzureMistral()
-                && !isGrok() && !isAzureGrok() && !isDeepSeek() && !isGemini() && !isCustom()) {
+                && !isGrok() && !isAzureGrok() && !isDeepSeek() && !isGemini() && !isBedrock() && !isCustom()) {
             throw new IllegalArgumentException(
-                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', 'anthropic', 'mistral', 'azure-mistral', 'grok', 'azure-grok', 'deepseek', 'gemini', or 'custom' for instance: " + id + " (got: " + provider + ")");
+                    "Instance 'provider' must be 'openai', 'azure-openai', 'azure-anthropic', 'anthropic', 'mistral', 'azure-mistral', 'grok', 'azure-grok', 'deepseek', 'gemini', 'bedrock', or 'custom' for instance: " + id + " (got: " + provider + ")");
         }
         if (isAzure() && (apiVersion == null || apiVersion.trim().isEmpty())) {
             throw new IllegalArgumentException("Instance 'apiVersion' is required for Azure instances: " + id);

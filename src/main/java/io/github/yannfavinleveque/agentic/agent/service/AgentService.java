@@ -1596,6 +1596,8 @@ public class AgentService {
                 providerType = Provider.DEEPSEEK;
             } else if (ic.isGemini()) {
                 providerType = Provider.GEMINI;
+            } else if (ic.isBedrock()) {
+                providerType = Provider.BEDROCK;
             } else if (ic.isCustom()) {
                 providerType = Provider.CUSTOM;
             } else {

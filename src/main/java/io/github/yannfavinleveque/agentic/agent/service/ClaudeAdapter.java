@@ -305,11 +305,23 @@ public class ClaudeAdapter {
                 && (instance.getProvider() == Provider.ANTHROPIC
                         || instance.getProvider() == Provider.AZURE_ANTHROPIC);
 
+        // AWS Bedrock InvokeModel: the model id goes in the URL path (handled by ProviderConfig),
+        // NOT in the body, and the Anthropic version is carried in the body as anthropic_version
+        // (e.g. "bedrock-2023-05-31") rather than the anthropic-version header. For every other
+        // provider the model stays in the body and anthropic_version is omitted.
+        boolean bedrock = instance != null && instance.getProvider() == Provider.BEDROCK;
+
         ClaudeRequest.ClaudeRequestBuilder requestBuilder = ClaudeRequest.builder()
-                .model(model)
+                .model(bedrock ? null : model)
                 .maxTokens(resolvedMaxTokens)
                 .messages(messages)
                 .temperature(temperature);
+
+        if (bedrock) {
+            String version = instance.getAzureApiVersion();
+            requestBuilder.anthropicVersion(
+                    version != null && !version.isBlank() ? version : "bedrock-2023-05-31");
+        }
 
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             if (cacheable) {

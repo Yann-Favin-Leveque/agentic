@@ -405,9 +405,13 @@ public class UnifiedRequestService {
         InstanceLimiter limiter = getLimiterForInstanceAndModel(instance, agent.getModel());
 
         // Only Anthropic and OpenAI-shaped Azure OpenAI/OpenAI providers stream token-by-token.
-        boolean anthropic = ProviderConfig.isAnthropicModel(agent.getModel())
-                || instance.getProvider() == Provider.ANTHROPIC
-                || instance.getProvider() == Provider.AZURE_ANTHROPIC;
+        // Bedrock is deliberately excluded: its InvokeModel SSE uses a separate
+        // invoke-with-response-stream endpoint with AWS event-stream framing (not Anthropic SSE),
+        // so streamed claude-* requests on Bedrock fall back to the blocking InvokeModel path below.
+        boolean anthropic = instance.getProvider() != Provider.BEDROCK
+                && (ProviderConfig.isAnthropicModel(agent.getModel())
+                        || instance.getProvider() == Provider.ANTHROPIC
+                        || instance.getProvider() == Provider.AZURE_ANTHROPIC);
         boolean openai = instance.getProvider() == Provider.OPENAI
                 || instance.getProvider() == Provider.AZURE_OPENAI
                 || instance.getProvider() == Provider.AZURE;

@@ -33,9 +33,23 @@ import java.util.Map;
 public class ClaudeRequest {
 
     /**
-     * Model name (e.g., "claude-sonnet-4-5", "claude-haiku-4-5")
+     * Model name (e.g., "claude-sonnet-4-5", "claude-haiku-4-5").
+     * <p>
+     * <b>Omitted for AWS Bedrock</b> ({@link io.github.yannfavinleveque.agentic.agent.core.Provider#BEDROCK}):
+     * Bedrock's InvokeModel carries the model id in the URL path, not the body, so this is left
+     * {@code null} (and dropped by {@code @JsonInclude(NON_NULL)}) for Bedrock requests.
      */
     private String model;
+
+    /**
+     * Anthropic API version carried IN the request body. Only set for AWS Bedrock
+     * ({@link io.github.yannfavinleveque.agentic.agent.core.Provider#BEDROCK}), where InvokeModel
+     * requires {@code "anthropic_version": "bedrock-2023-05-31"} in the body (direct/Azure Anthropic
+     * send the version as the {@code anthropic-version} HTTP header instead, so this stays {@code null}
+     * and is dropped by {@code @JsonInclude(NON_NULL)}).
+     */
+    @JsonProperty("anthropic_version")
+    private String anthropicVersion;
 
     /**
      * Maximum tokens for response (required for Claude)

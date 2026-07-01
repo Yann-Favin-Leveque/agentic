@@ -195,6 +195,8 @@ public final class ProviderConfig {
                 return getDeepSeekPath(endpoint);
             case GEMINI:
                 return getGeminiPath(endpoint);
+            case BEDROCK:
+                return getBedrockPath(endpoint, model);
             case CUSTOM:
                 // CUSTOM paths are read from CustomProviderSpec by the caller
                 // (UnifiedRequestService). getPath() should not be called for CUSTOM
@@ -473,6 +475,72 @@ public final class ProviderConfig {
         }
     }
 
+    private static String getBedrockPath(Endpoint endpoint, String model) {
+        // AWS Bedrock runtime, Anthropic-native InvokeModel: POST /model/{modelId}/invoke
+        // (model id lives in the URL path, NOT the body). Only the messages endpoint is supported.
+        if (endpoint == Endpoint.CHAT_COMPLETIONS) {
+            if (model == null || model.trim().isEmpty()) {
+                throw new IllegalArgumentException("Model is required for Bedrock InvokeModel path");
+            }
+            return "/model/" + toBedrockModelId(model) + "/invoke";
+        }
+        throw new UnsupportedOperationException(
+                "Bedrock doesn't support: " + endpoint + ". Only CHAT_COMPLETIONS is available.");
+    }
+
+    /**
+     * Maps a logical Claude model name (e.g. {@code claude-opus-4-8}) to the AWS Bedrock model id
+     * used in the InvokeModel URL path.
+     * <p>
+     * Current mapping (intentionally simple, see TODO): a bare {@code claude-*} name is prefixed
+     * with {@code anthropic.} (→ {@code anthropic.claude-opus-4-8}); a name that already carries a
+     * provider/region prefix — i.e. it contains a {@code .} (e.g. {@code anthropic.claude-...} or an
+     * EU inference-profile {@code eu.anthropic.claude-...}) — is passed through unchanged. This lets
+     * callers put the EXACT Bedrock model id / inference-profile id in {@code LLM_INSTANCES.models}
+     * when the simple prefixing is not what they want.
+     * <p>
+     * TODO(bedrock): make the mapping configurable per-instance (e.g. a {@code modelIdMap} on the
+     * instance JSON, or a region→inference-profile resolver) instead of this prefix heuristic, and
+     * add a SigV4 signing path as an alternative to the static Bearer API key.
+     *
+     * @param model logical model name (must be non-null/non-blank — caller enforces)
+     * @return the Bedrock model id for the URL path
+     */
+    public static String toBedrockModelId(String model) {
+        String m = model.trim();
+        // Already a fully-qualified Bedrock id / inference-profile id (contains a dot) → pass through.
+        // This lets callers put the EXACT id (e.g. "eu.anthropic.claude-sonnet-4-6" or
+        // "global.anthropic.claude-sonnet-5") in LLM_INSTANCES.models to override the mapping.
+        if (m.contains(".")) {
+            return m;
+        }
+        // Bare "claude-*" logical name → resolve to the concrete cross-region (EU) inference profile.
+        // The recent Anthropic models on Bedrock are only invocable via an inference profile, not the
+        // bare on-demand "anthropic.claude-*" id, and the Bedrock ids carry irregular version suffixes
+        // (Haiku 4.5 → -20251001-v1:0, Opus 4.6 → -v1, Sonnet 4.6 → none). Map explicitly; fall back to
+        // the simple "anthropic." prefix for anything not in the table.
+        String eu = BEDROCK_EU_PROFILE.get(m);
+        if (eu != null) {
+            return eu;
+        }
+        return "anthropic." + m;
+    }
+
+    /**
+     * Logical Claude name → EU cross-region inference-profile id on Bedrock.
+     * Update when new models are granted (Opus 4.8 / Sonnet 5 / Fable 5 pending per-model access).
+     * TODO(bedrock): make region configurable (eu./us./global.) per instance instead of hardcoding EU.
+     */
+    private static final java.util.Map<String, String> BEDROCK_EU_PROFILE = java.util.Map.ofEntries(
+            java.util.Map.entry("claude-sonnet-4-6", "eu.anthropic.claude-sonnet-4-6"),
+            java.util.Map.entry("claude-sonnet-4-5", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            java.util.Map.entry("claude-opus-4-6", "eu.anthropic.claude-opus-4-6-v1"),
+            java.util.Map.entry("claude-opus-4-5", "eu.anthropic.claude-opus-4-5-20251101-v1:0"),
+            java.util.Map.entry("claude-opus-4-7", "eu.anthropic.claude-opus-4-7"),
+            java.util.Map.entry("claude-opus-4-8", "eu.anthropic.claude-opus-4-8"),
+            java.util.Map.entry("claude-haiku-4-5", "eu.anthropic.claude-haiku-4-5-20251001-v1:0"),
+            java.util.Map.entry("claude-fable-5", "eu.anthropic.claude-fable-5"));
+
     private static String requireModel(String model) {
         if (model == null || model.trim().isEmpty()) {
             throw new IllegalArgumentException("Model is required for Azure OpenAI deployment endpoints");
@@ -526,6 +594,13 @@ public final class ProviderConfig {
                 break;
             case GEMINI:
                 // The OpenAI-compat shim accepts Bearer auth (despite native API using x-goog-api-key).
+                headers.put("Authorization", "Bearer " + apiKey);
+                break;
+            case BEDROCK:
+                // AWS Bedrock long-lived API key → Bearer auth (no SigV4). The anthropic version is
+                // sent in the BODY (anthropic_version), NOT as a header, for Bedrock.
+                // TODO(bedrock): add a SigV4 signing alternative (AwsV4HttpSigner / IAM role) for
+                // deployments that cannot use a static Bearer Bedrock API key.
                 headers.put("Authorization", "Bearer " + apiKey);
                 break;
             case CUSTOM:
@@ -604,7 +679,8 @@ public final class ProviderConfig {
             case GROK:
             case DEEPSEEK:
             case GEMINI:
-                // No query params required
+            case BEDROCK:
+                // No query params required (Bedrock auth is header-based, version is in the body)
                 break;
             case AZURE_GROK:
                 if (apiVersion == null || apiVersion.trim().isEmpty()) {
@@ -641,6 +717,7 @@ public final class ProviderConfig {
                 return !AZURE_UNSUPPORTED_ENDPOINTS.contains(endpoint);
             case AZURE_ANTHROPIC:
             case ANTHROPIC:
+            case BEDROCK:
                 return endpoint == Endpoint.CHAT_COMPLETIONS;
             case MISTRAL:
             case AZURE_MISTRAL:
